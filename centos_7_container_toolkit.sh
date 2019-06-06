@@ -19,7 +19,7 @@ function _help_menu() {
     # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] -m Install Kubernetes MASTER NODE, Docker, and Rancher.'
+    echo '[*] -m Install Kubernetes MASTER NODE and Docker.'
     echo '        bash centos_7_container_toolkit.sh -m'
     echo ''
     echo '[*] -n Install Kubernetes WORKER NODE and Docker'
@@ -27,6 +27,9 @@ function _help_menu() {
     echo ''
     echo '[*] -d Install ONLY Docker'
     echo '        bash centos_7_container_toolkit.sh -d'
+    echo ''
+    echo '[*] -r Install a ONLY Rancher host.'
+    echo '        bash centos_7_container_toolkit.sh -r'
     echo ''
     echo '[*] -c Clean up Kubernetes WORKER NODES. Typically we should not need this.'
     echo '        bash centos_7_container_toolkit.sh -c'
@@ -233,7 +236,7 @@ function join_node_to_master() {
 
 function install_rancher() {
     # Install Rancher on master kubernetes host.
-    docker run -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher
+    docker run -d --restart=unless-stopped -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher
 }
 
 function cleanup_workers() {
@@ -278,7 +281,7 @@ case "$1" in
         update_bridge
         set_cgroup_driver
         api_server_master
-        install_rancher
+        #install_rancher
         install_flannel_network
         ;;
     -n)
@@ -299,6 +302,16 @@ case "$1" in
         set_cgroup_driver
         join_node_to_master
         ;;
+    -r)
+        _run_as_root
+        cleanup_docker
+        setup_repo
+        install_docker
+        start_enable_docker
+        test_docker
+        set_hostname
+        install_rancher
+        ;;
     -c)
         cleanup_workers
         ;;
@@ -309,4 +322,3 @@ case "$1" in
         _help_menu
         ;;
 esac
-
