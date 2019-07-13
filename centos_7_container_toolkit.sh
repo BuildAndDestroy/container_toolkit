@@ -300,7 +300,7 @@ case "$1" in
         configure_node_firewall
         update_bridge
         set_cgroup_driver
-        join_node_to_master
+        #join_node_to_master
         ;;
     -r)
         _run_as_root
@@ -310,6 +310,7 @@ case "$1" in
         start_enable_docker
         test_docker
         set_hostname
+        configure_master_firewall
         install_rancher
         ;;
     -c)
