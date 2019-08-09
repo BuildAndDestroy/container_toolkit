@@ -64,3 +64,9 @@ kube-system   kube-proxy-gdj2k                     1/1     Running   0          
 kube-system   kube-proxy-r5bw2                     1/1     Running   0          11m
 kube-system   kube-scheduler-k8s-master            1/1     Running   0          10m
 ```
+
+## Install Dockerfile
+```
+docker build -t container_toolkit
+docker run -it container_toolkit /opt/container_toolkit/centos_7_container_toolkit.sh -h
+```
