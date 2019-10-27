@@ -19,11 +19,17 @@ function _help_menu() {
     # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] -m Install Kubernetes MASTER NODE and Docker.'
+    echo '[*] -mf Install Kubernetes MASTER NODE Flannel and Docker.'
+    echo '        bash centos_7_container_toolkit.sh -m'
+    echo ''
+    echo '[*] -mc Install Kubernetes MASTER NODE Calico and Docker.'
     echo '        bash centos_7_container_toolkit.sh -m'
     echo ''
     echo '[*] -n Install Kubernetes WORKER NODE and Docker'
     echo '        bash centos_7_container_toolkit.sh -n'
+    echo ''
+    echo '[*] --helm Apply this option to install helm.'
+    echo '        bash centos_7_container_toolkit.sh --helm'
     echo ''
     echo '[*] -d Install ONLY Docker'
     echo '        bash centos_7_container_toolkit.sh -d'
@@ -222,6 +228,21 @@ function install_flannel_network() {
     kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
 }
 
+function install_calico_policy() {
+    curl https://docs.projectcalico.org/v3.9/manifests/canal.yaml -O
+    #POD_CIDR="<your-pod-cidr>" sed -i -e "s?10.244.0.0/16?$POD_CIDR?g" canal.yaml
+    kubectl apply -f canal.yaml
+}
+
+function install_calico_network_policy() {
+    curl https://docs.projectcalico.org/v3.9/manifests/calico.yaml -O
+    # POD_CIDR="10.244.0.0" sed -i -e "s?192.168.0.0?$POD_CIDR?g" calico.yaml
+    sed -i -e "s?192.168.0.0?10.244.0.0?g" calico.yaml 
+    kubectl apply -f calico.yaml
+    echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
+    kubectl get pods --all-namespaces
+}
+
 function join_node_to_master() {
     # Request mast ip and token to connect node to master.
     echo "Please copy/paste Master node IP:"
@@ -250,6 +271,29 @@ function cleanup_workers() {
     done
 }
 
+function install_helm() {
+    echo "[*] Installing helm."
+    curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get > install-helm.sh
+    chmod 755 install-helm.sh
+    ./install-helm.sh
+}
+
+function install_tiller() {
+    kubectl -n kube-system create serviceaccount tiller
+    kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
+    sed -i 's#10.96.0.0#10.244.0.0#g' /etc/kubernetes/manifests/kube-apiserver.yaml
+    helm init --service-account tiller
+}
+
+function install_helm_chart() {
+    echo '[*] Updating firewall and installing helm dashboard.'
+    firewall-cmd --permanent --add-port=8443/tcp
+    echo '[*] Once the tiller container deploys, run both commands:'
+    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
+    echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
+}
+
+
 ############################
 # Functions to be executed #
 ############################
@@ -264,7 +308,7 @@ case "$1" in
         start_enable_docker
         test_docker
         ;;
-    -m)
+    -mf)
         _run_as_root
         cleanup_docker
         setup_repo
@@ -281,8 +325,26 @@ case "$1" in
         update_bridge
         set_cgroup_driver
         api_server_master
-        #install_rancher
         install_flannel_network
+        ;;
+    -mc)
+        _run_as_root
+        cleanup_docker
+        setup_repo
+        install_docker
+        start_enable_docker
+        test_docker
+        set_hostname
+        disable_selinux
+        enable_br_netfilter
+        enable_bridge_iptables
+        disable_swap
+        install_kubernetes
+        configure_master_firewall
+        update_bridge
+        set_cgroup_driver
+        api_server_master
+        install_calico_network_policy
         ;;
     -n)
         _run_as_root
@@ -300,7 +362,11 @@ case "$1" in
         configure_node_firewall
         update_bridge
         set_cgroup_driver
-        #join_node_to_master
+        ;;
+    --helm)
+        install_helm
+        install_tiller
+        install_helm_chart
         ;;
     -r)
         _run_as_root
