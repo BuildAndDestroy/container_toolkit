@@ -217,7 +217,7 @@ EOF
 function api_server_master() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
-    kubeadm init --pod-network-cidr=10.244.0.0/16
+    kubeadm init --pod-network-cidr=10.244.0.0/16 # --authorization-mode=RBAC
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
@@ -279,19 +279,30 @@ function install_helm() {
 }
 
 function install_tiller() {
-    kubectl -n kube-system create serviceaccount tiller
-    kubectl create clusterrolebinding tiller --clusterrole cluster-admin --serviceaccount=kube-system:tiller
-    sed -i 's#10.96.0.0#10.244.0.0#g' /etc/kubernetes/manifests/kube-apiserver.yaml
-    helm init --service-account tiller
+    # kubectl -n kube-system create serviceaccount tiller
+    kubectl create serviceaccount --namespace kube-system tiller
+    kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+    kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'
+    helm init --service-account=kube-system:tiller
+    # kubectl taint nodes --all node-role.kubernetes.io/master-
 }
 
 function install_helm_chart() {
     echo '[*] Updating firewall and installing helm dashboard.'
     firewall-cmd --permanent --add-port=8443/tcp
+    echo '[*] Add nodes to your cluster, this will allow Tiller to deploy.'
     echo '[*] Once the tiller container deploys, run both commands:'
     echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
     echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
 }
+
+################################################################################################
+#    To Do List:                                                                               #
+#      Enable RBAC                                                                             #
+#        https://docs.bitnami.com/kubernetes/how-to/configure-rbac-in-your-kubernetes-cluster/ #
+#      Install Tiller with correct role.                                                       #
+#      Install Helm with correct role.                                                         #
+################################################################################################
 
 
 ############################
@@ -364,9 +375,10 @@ case "$1" in
         set_cgroup_driver
         ;;
     --helm)
-        install_helm
-        install_tiller
-        install_helm_chart
+        echo '[*] Currently needs work!'
+        # install_helm
+        # install_tiller
+        # install_helm_chart
         ;;
     -r)
         _run_as_root
