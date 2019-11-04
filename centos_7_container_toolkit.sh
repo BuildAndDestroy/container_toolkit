@@ -214,10 +214,19 @@ EOF
     systemctl restart kubelet
 }
 
-function api_server_master() {
+function api_server_master_flannel() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
-    kubeadm init --pod-network-cidr=10.244.0.0/16 # --authorization-mode=RBAC
+    kubeadm init --pod-network-cidr=10.244.0.0/16
+    mkdir -p $HOME/.kube
+    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+}
+
+function api_server_master_calico() {
+    # Beginning of Master node setup.
+    echo '[*] Starting Master node.'
+    kubeadm init --pod-network-cidr=192.168.0.0/16
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
@@ -236,8 +245,7 @@ function install_calico_policy() {
 
 function install_calico_network_policy() {
     curl https://docs.projectcalico.org/v3.9/manifests/calico.yaml -O
-    # POD_CIDR="10.244.0.0" sed -i -e "s?192.168.0.0?$POD_CIDR?g" calico.yaml
-    sed -i -e "s?192.168.0.0?10.244.0.0?g" calico.yaml 
+    # sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml 
     kubectl apply -f calico.yaml
     echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
     kubectl get pods --all-namespaces
@@ -280,10 +288,12 @@ function install_helm() {
 
 function install_tiller() {
     # kubectl -n kube-system create serviceaccount tiller
+    # kubectl create serviceaccount --namespace kube-system tiller-deploy
     kubectl create serviceaccount --namespace kube-system tiller
     kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+    helm init
+    sleep 10
     kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'
-    helm init --service-account=kube-system:tiller
     # kubectl taint nodes --all node-role.kubernetes.io/master-
 }
 
@@ -335,7 +345,7 @@ case "$1" in
         configure_master_firewall
         update_bridge
         set_cgroup_driver
-        api_server_master
+        api_server_master_flannel
         install_flannel_network
         ;;
     -mc)
@@ -354,7 +364,7 @@ case "$1" in
         configure_master_firewall
         update_bridge
         set_cgroup_driver
-        api_server_master
+        api_server_master_calico
         install_calico_network_policy
         ;;
     -n)
