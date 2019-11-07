@@ -214,10 +214,19 @@ EOF
     systemctl restart kubelet
 }
 
-function api_server_master() {
+function api_server_master_flannel() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
-    kubeadm init --pod-network-cidr=10.244.0.0/16 # --authorization-mode=RBAC
+    kubeadm init #--pod-network-cidr=10.244.0.0/16
+    mkdir -p $HOME/.kube
+    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+}
+
+function api_server_master_calico() {
+    # Beginning of Master node setup.
+    echo '[*] Starting Master node.'
+    kubeadm init #--pod-network-cidr=192.168.0.0/16
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
@@ -225,34 +234,19 @@ function api_server_master() {
 
 function install_flannel_network() {
     # Install flannel network for kubernetes.
-    kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
-}
-
-function install_calico_policy() {
-    curl https://docs.projectcalico.org/v3.9/manifests/canal.yaml -O
-    #POD_CIDR="<your-pod-cidr>" sed -i -e "s?10.244.0.0/16?$POD_CIDR?g" canal.yaml
-    kubectl apply -f canal.yaml
+    curl https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml -O
+    sed -i -e "s?10.244.0.0?10.96.0.0?g" kube-flannel.yml
+    kubectl apply -f kube-flannel.yml
+    sleep 5
+    kubectl get pods --all-namespaces
 }
 
 function install_calico_network_policy() {
     curl https://docs.projectcalico.org/v3.9/manifests/calico.yaml -O
-    # POD_CIDR="10.244.0.0" sed -i -e "s?192.168.0.0?$POD_CIDR?g" calico.yaml
-    sed -i -e "s?192.168.0.0?10.244.0.0?g" calico.yaml 
+    sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
     kubectl apply -f calico.yaml
     echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
     kubectl get pods --all-namespaces
-}
-
-function join_node_to_master() {
-    # Request mast ip and token to connect node to master.
-    echo "Please copy/paste Master node IP:"
-    read -r -p ">>> " ipValue
-    echo "Please copy/paste Master token:"
-    read -r -p ">>> " tokenValue
-    echo 'Please copy/paste Master discovery-token-ca-cert-hash:'
-    read -r -p ">>> " discoveryToken
-    echo "kubeadm join --token "$tokenValue" "$ipValue":6443 --discovery-token-ca-cert-hash "$discoveryToken""
-    kubeadm join --token $tokenValue $ipValue:6443 --discovery-token-ca-cert-hash $discoveryToken
 }
 
 function install_rancher() {
@@ -271,20 +265,43 @@ function cleanup_workers() {
     done
 }
 
+function tiller_permissions_yaml() {
+    cat <<EOF > helm-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tiller
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tiller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: tiller
+    namespace: kube-system
+EOF
+    kubectl apply -f helm-rbac.yaml
+}
+
+
 function install_helm() {
     echo "[*] Installing helm."
-    curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get > install-helm.sh
+    curl -L https://git.io/get_helm.sh > install-helm.sh
     chmod 755 install-helm.sh
     ./install-helm.sh
 }
 
 function install_tiller() {
-    # kubectl -n kube-system create serviceaccount tiller
-    kubectl create serviceaccount --namespace kube-system tiller
-    kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
-    kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'
-    helm init --service-account=kube-system:tiller
-    # kubectl taint nodes --all node-role.kubernetes.io/master-
+    # Install for Tiller and Helm from https://devopscube.com/install-configure-helm-kubernetes/
+    helm init --service-account=tiller --history-max 300
+    sleep 5
+    kubectl get deployment tiller-deploy -n kube-system
 }
 
 function install_helm_chart() {
@@ -292,16 +309,13 @@ function install_helm_chart() {
     firewall-cmd --permanent --add-port=8443/tcp
     echo '[*] Add nodes to your cluster, this will allow Tiller to deploy.'
     echo '[*] Once the tiller container deploys, run both commands:'
-    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
+    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo --set rbac.create=true'
     echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
 }
 
 ################################################################################################
 #    To Do List:                                                                               #
-#      Enable RBAC                                                                             #
-#        https://docs.bitnami.com/kubernetes/how-to/configure-rbac-in-your-kubernetes-cluster/ #
-#      Install Tiller with correct role.                                                       #
-#      Install Helm with correct role.                                                         #
+#      Deploy charts                                                                           #
 ################################################################################################
 
 
@@ -335,7 +349,7 @@ case "$1" in
         configure_master_firewall
         update_bridge
         set_cgroup_driver
-        api_server_master
+        api_server_master_flannel
         install_flannel_network
         ;;
     -mc)
@@ -354,7 +368,7 @@ case "$1" in
         configure_master_firewall
         update_bridge
         set_cgroup_driver
-        api_server_master
+        api_server_master_calico
         install_calico_network_policy
         ;;
     -n)
@@ -375,10 +389,10 @@ case "$1" in
         set_cgroup_driver
         ;;
     --helm)
-        echo '[*] Currently needs work!'
-        # install_helm
-        # install_tiller
-        # install_helm_chart
+        tiller_permissions_yaml
+        install_helm
+        install_tiller
+        install_helm_chart
         ;;
     -r)
         _run_as_root
