@@ -158,6 +158,7 @@ function configure_master_firewall() {
     firewall-cmd --permanent --add-port=10255/tcp
     firewall-cmd --permanent --add-port=30000-32767/tcp
     firewall-cmd --permanent --add-port=30000-32767/udp
+    firewall-cmd --add-masquerade --permanent
     firewall-cmd --reload
 }
 
@@ -181,6 +182,7 @@ function configure_node_firewall () {
     firewall-cmd --permanent --add-port=10255/tcp
     firewall-cmd --permanent --add-port=30000-32767/tcp
     firewall-cmd --permanent --add-port=30000-32767/udp
+    firewall-cmd --add-masquerade --permanent
     firewall-cmd --reload
 }
 
