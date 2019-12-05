@@ -19,26 +19,34 @@ function _help_menu() {
     # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] -mf Install Kubernetes MASTER NODE Flannel and Docker.'
-    echo '        bash centos_7_container_toolkit.sh -m'
+    echo '[*] --master-calico   Install Kubernetes MASTER NODE Calico and Docker.'
+    echo '                      bash centos7_container_toolkit.sh -m'
     echo ''
-    echo '[*] -mc Install Kubernetes MASTER NODE Calico and Docker.'
-    echo '        bash centos_7_container_toolkit.sh -m'
+    echo '[*] --worker-node     Install Kubernetes WORKER NODE and Docker'
+    echo '                      bash centos7_container_toolkit.sh --node'
     echo ''
-    echo '[*] -n Install Kubernetes WORKER NODE and Docker'
-    echo '        bash centos_7_container_toolkit.sh -n'
+    echo '[*] --docker     Install ONLY Docker.'
+    echo '                 bash centos7_container_toolkit.sh --docker'
     echo ''
-    echo '[*] --helm Apply this option to install helm.'
-    echo '        bash centos_7_container_toolkit.sh --helm'
+    echo '[*] --rancher    Install a ONLY Rancher constainer.'
+    echo '                 bash centos7_container_toolkit.sh --rancher'
     echo ''
-    echo '[*] -d Install ONLY Docker'
-    echo '        bash centos_7_container_toolkit.sh -d'
+    echo '[*] --helm       Apply this option to install helm.'
+    echo '                 bash centos7_container_toolkit.sh --helm'
     echo ''
-    echo '[*] -r Install a ONLY Rancher host.'
-    echo '        bash centos_7_container_toolkit.sh -r'
+    echo '[*] --PSO-init   After Kubernetes is up, run this first to install Pure Storage PSO.'
+    echo '                 bash centos7_container_toolkit.sh --PSO-init'
     echo ''
-    echo '[*] -c Clean up Kubernetes WORKER NODES. Typically we should not need this.'
-    echo '        bash centos_7_container_toolkit.sh -c'
+    echo '    >>> --PSO-kube OR --PSO-helm, not both.'
+    echo ''
+    echo '[*] --PSO-kube   After PSO-init ws ran, run this to install PSO into kubectl.'
+    echo '                 bash centos7_container_toolkit.sh --PSO-kube'
+    echo ''
+    echo '[*] --PSO-helm   After PSO-init ws ran run this to install PSO into helm.'
+    echo '                 bash centos7_container_toolkit.sh --PSO-helm'
+    echo ''
+    echo '[*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.'
+    echo '                 bash centos7_container_toolkit.sh --clean'
     echo ''
     exit
 }
@@ -216,14 +224,6 @@ EOF
     systemctl restart kubelet
 }
 
-function api_server_master_flannel() {
-    # Beginning of Master node setup.
-    echo '[*] Starting Master node.'
-    kubeadm init #--pod-network-cidr=10.244.0.0/16
-    mkdir -p $HOME/.kube
-    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    sudo chown $(id -u):$(id -g) $HOME/.kube/config
-}
 
 function api_server_master_calico() {
     # Beginning of Master node setup.
@@ -234,16 +234,9 @@ function api_server_master_calico() {
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
 }
 
-function install_flannel_network() {
-    # Install flannel network for kubernetes.
-    curl https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml -O
-    sed -i -e "s?10.244.0.0?10.96.0.0?g" kube-flannel.yml
-    kubectl apply -f kube-flannel.yml
-    sleep 5
-    kubectl get pods --all-namespaces
-}
 
 function install_calico_network_policy() {
+    # Install the calico pod network.
     curl https://docs.projectcalico.org/v3.9/manifests/calico.yaml -O
     sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
     kubectl apply -f calico.yaml
@@ -268,6 +261,7 @@ function cleanup_workers() {
 }
 
 function tiller_permissions_yaml() {
+    # Install tiller permissions for kubernetes RBAC.
     cat <<EOF > helm-rbac.yaml
 apiVersion: v1
 kind: ServiceAccount
@@ -293,6 +287,7 @@ EOF
 
 
 function install_helm() {
+    # Install helm once.
     echo "[*] Installing helm."
     curl -L https://git.io/get_helm.sh > install-helm.sh
     chmod 755 install-helm.sh
@@ -301,8 +296,8 @@ function install_helm() {
 
 function install_tiller() {
     # Install for Tiller and Helm from https://devopscube.com/install-configure-helm-kubernetes/
-    helm init --service-account=tiller --history-max 300
-    sleep 5
+    helm init --service-account=tiller --history-max 30
+0    sleep 5
     kubectl get deployment tiller-deploy -n kube-system
 }
 
@@ -311,9 +306,48 @@ function install_helm_chart() {
     firewall-cmd --permanent --add-port=8443/tcp
     echo '[*] Add nodes to your cluster, this will allow Tiller to deploy.'
     echo '[*] Once the tiller container deploys, run both commands:'
-    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo --set rbac.create=true'
+    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
     echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
 }
+
+
+function install_pure_storage_pso() { #  Install the Pure Storage Orchestrator for Kubernetes.
+    helm repo add pure http://purestorage.github.io/helm-charts
+    helm repo update
+    helm search pure-k8s-plugin
+}
+
+function clone_helm_chart() { #  Create the values.yaml file, then tell end user to update.
+    yum install git rsync -y
+    git clone https://github.com/purestorage/helm-charts.git
+    echo "[*] Change directory to helm-charts/operator-csi-plugin and update the values.yaml file with:"
+    echo "        Your FlashArray and FlashBlade API credentials and IPv4s"
+    echo "        fexPath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec"
+    echo "        sanType: ISCSI or FC"
+    echo "        pureBackend: block or file"
+    echo "        Delete anything not being used."
+    echo ""
+    mv centos7_container_toolkit.sh helm-charts/operator-csi-plugin
+    echo "Then run centos7_container_toolkit.sh --PSO-kube OR --PSO-helm, not both."
+}
+
+function install_pso_plugin_kube() { #  Install the plugin using values.yaml
+    if [ $(pwd | sed 's#/#\ #g' | awk '{print $NF}') != "operator-csi-plugin" ]; then 
+        echo "Please change working directory to /path/to/helm-charts/operator-csi-plugin"
+        exit
+    fi
+    ./install.sh --namespace=pure-csi-operator --orchestrator=k8s -f values.yaml
+    echo "Kubernetes install done."
+}
+
+function install_pso_plugin_helm() {
+    if [ $(pwd | sed 's#/#\ #g' | awk '{print $NF}') != "operator-csi-plugin" ]; then 
+        echo "Please change working directory to /path/to/helm-charts/operator-csi-plugin"
+        exit
+    fi
+    helm install --name pure-storage-driver pure/pure-csi --namespace pso-operator -f values.yaml
+}
+
 
 ################################################################################################
 #    To Do List:                                                                               #
@@ -327,7 +361,7 @@ function install_helm_chart() {
 
 
 case "$1" in
-    -d)
+    --docker)
         _run_as_root
         cleanup_docker
         setup_repo
@@ -335,26 +369,7 @@ case "$1" in
         start_enable_docker
         test_docker
         ;;
-    -mf)
-        _run_as_root
-        cleanup_docker
-        setup_repo
-        install_docker
-        start_enable_docker
-        test_docker
-        set_hostname
-        disable_selinux
-        enable_br_netfilter
-        enable_bridge_iptables
-        disable_swap
-        install_kubernetes
-        configure_master_firewall
-        update_bridge
-        set_cgroup_driver
-        api_server_master_flannel
-        install_flannel_network
-        ;;
-    -mc)
+    --master-calico)
         _run_as_root
         cleanup_docker
         setup_repo
@@ -373,7 +388,7 @@ case "$1" in
         api_server_master_calico
         install_calico_network_policy
         ;;
-    -n)
+    --worker-node)
         _run_as_root
         cleanup_docker
         setup_repo
@@ -391,12 +406,26 @@ case "$1" in
         set_cgroup_driver
         ;;
     --helm)
+        _run_as_root
         tiller_permissions_yaml
         install_helm
         install_tiller
         install_helm_chart
         ;;
-    -r)
+    --PSO-init)
+        _run_as_root
+        install_pure_storage_pso
+        clone_helm_chart
+        ;;
+    --PSO-kube)
+        _run_as_root
+        install_pso_plugin_kube
+        ;;
+    --PSO-helm)
+        _run_as_root
+        install_pso_plugin_helm
+        ;;
+    --rancher)
         _run_as_root
         cleanup_docker
         setup_repo
@@ -407,10 +436,14 @@ case "$1" in
         configure_master_firewall
         install_rancher
         ;;
-    -c)
+    --clean)
+        _run_as_root
         cleanup_workers
         ;;
     -h)
+        _help_menu
+        ;;
+    --help)
         _help_menu
         ;;
     *)
