@@ -1,5 +1,5 @@
 Automate the install of Kubernetes and Docker.
-All works except Flannel Networking. Please use Calico for now.
+Calico networking is here to stay.
 
 
 # Help Menu
