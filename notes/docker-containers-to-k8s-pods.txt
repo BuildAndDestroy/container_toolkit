@@ -1,0 +1,57 @@
+Visual instructions:
+	https://www.youtube.com/watch?v=r15S2tBevoE
+
+Prerequisits
+
+[*] docker-compose files for private registry
+	https://github.com/justmeandopensource/docker/tree/master/docker-compose-files/docker-registry
+
+
+[*] Create directories on kube-master and all nodes
+	mkdir /mnt/docker-registry/certs
+
+  If you have Ansible, run this to push to your k8s hosts:
+	ansible -m shell -a "mkdir /mnt/docker-registry/certs" k8s-lehi-lab-hosts
+
+
+[*] You need the following in your /etc/docker/daemon.json file:
+
+	{"insecure-registries": ["hostORip:port"]}
+
+  Example:
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ],
+  "insecure-registries": ["10.204.119.86:5000"]
+}
+
+[*] docker-compose must be installed
+
+
+Rough Guidelines on creating an internal registry
+
+[*] Use the correct docker-compose file you need.
+	Change the file name to:
+		"docker-compose.yaml"
+	On the master node, run the following to create your registry:
+		"docker-compose up -d"
+
+You now have a running registry.
+
+[*] To use an image from this registry to create a pod, add an image like so:
+	Build the image:
+		docker build -t <ip/host of internal registry>:5000/mydebian:v1 .
+		docker push <ip/host of internal registry>:5000/mydebian:v1
+
+	Now pull the image into a pod:
+		kubectl run mytest --image 10.204.119.86:5000/mydebian:v1
+
+	Separate terminal, watch the events:
+		kubectl get events -w
