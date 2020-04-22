@@ -1,22 +1,34 @@
-Visual instructions:
+>>> Visual instructions:
 	https://www.youtube.com/watch?v=r15S2tBevoE
 
-Prerequisits
+
+>>> Prerequisits
+
+[*] docker-compose must be installed on Master
+	yum install epel-release -y
+	yum install docker-composer
 
 [*] docker-compose files for private registry
 	https://github.com/justmeandopensource/docker/tree/master/docker-compose-files/docker-registry
 
 
-[*] Create directories on kube-master and all nodes
-	mkdir /mnt/docker-registry/certs
+[*] Install Apache for the htttpd option:
+	yum install httpd -y
 
-  If you have Ansible, run this to push to your k8s hosts:
-	ansible -m shell -a "mkdir /mnt/docker-registry/certs" k8s-lehi-lab-hosts
+[*] Create directories on kube-master and worker nodes
+	mkdir -p /mnt/docker-registry/certs
 
+  If you have Ansible, run this to push to all of your k8s hosts, Master and Workers:
+	ansible -m shell -a "mkdir -p /mnt/docker-registry/certs" k8s-lab-hosts
 
-[*] You need the following in your /etc/docker/daemon.json file:
+[*] Create the auth directory:
+	mkdir -p /mnt/docker-registry/auth
 
-	{"insecure-registries": ["hostORip:port"]}
+  If you have Ansible, run this to push to all of your k8s hosts, Master and Workers:
+	ansible -m shell -a "mkdir -p /mnt/docker-registry/auth" k8s-lab-hosts
+
+[*] You need the following in your /etc/docker/daemon.json file on Master and Worker nodes
+	{"insecure-registries": ["host-OR-ip:port"]}
 
   Example:
 {
@@ -29,29 +41,110 @@ Prerequisits
   "storage-opts": [
     "overlay2.override_kernel_check=true"
   ],
-  "insecure-registries": ["10.204.119.86:5000"]
+  "insecure-registries": ["192,168.1.200:5000"]
 }
 
-[*] docker-compose must be installed
+[*] Create the openssl.conf file in any directory that you want, Update as needed:
+
+[ req ]
+distinguished_name = req_distinguished_name
+x509_extensions     = req_ext
+default_md         = sha256
+prompt             = no
+encrypt_key        = no
+
+[ req_distinguished_name ]
+countryName            = "GB"
+localityName           = "London"
+organizationName       = "Just Me and Opensource"
+organizationalUnitName = "YouTube"
+commonName             = "<Docker Server IP>"
+emailAddress           = "test@example.com"
+
+[ req_ext ]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS = "<Docker Server IP>"
 
 
-Rough Guidelines on creating an internal registry
+[*] Generate a certificate:
+	openssl req -x509 -newkey rsa:4096 -days 365 -config openssl.conf -keyout /mnt/docker-registry/certs/domain.key -out /mnt/docker-registry/certs/domain.crt
 
-[*] Use the correct docker-compose file you need.
+[*] Verify your cert:
+	openssl x509 -text -noout -in /mnt/docker-registry/certs/domain.crt
+
+[*] Create user and password for access to docker registry:
+	htpasswd -Bbn docker-user docker-password  > /mnt/docker-registry/auth/htpasswd #  USE your own user and password!!
+
+
+>>> Rough Guidelines on creating an internal registry
+
+** Side note, you can run this in a separate terminal to watch for failues. Great for debugging:
+		kubectl get events -w
+
+[*] Use the correct docker-compose file you need (Use 03 for TLS and authentication).
 	Change the file name to:
 		"docker-compose.yaml"
 	On the master node, run the following to create your registry:
 		"docker-compose up -d"
+	You now have a running registry.
 
-You now have a running registry.
+[*] Login to your registry:
+docker login 192.168.1.200:5000
+Username: docker-user
+Password: 
+WARNING! Your password will be stored unencrypted in /root/.docker/config.json.
+Configure a credential helper to remove this warning. See
+https://docs.docker.com/engine/reference/commandline/login/#credentials-store
+
+Login Succeeded
+
+	If you do not login, you should see:
+docker pull 192.168.1.200:5000/mydebian:v1
+Error response from daemon: Get http://192.168.1.200:5000/v2/: net/http: HTTP/1.x transport connection broken: malformed HTTP response "\x15\x03\x01\x00\x02\x02"
+
+[*] Pull your image:
+docker pull 192.168.1.200:5000/mydebian:v1
+v1: Pulling from mydebian
+7e2b2a5af8f6: Already exists 
+Digest: sha256:810e68a830ba42daa245ad973d516222c6c8256b7e82f3a70274deb67b4b5238
+Status: Downloaded newer image for 192.168.1.200:5000/mydebian:v1
+192.168.1.200:5000/mydebian:v1
+
 
 [*] To use an image from this registry to create a pod, add an image like so:
-	Build the image:
+	Build the image and push to registry:
 		docker build -t <ip/host of internal registry>:5000/mydebian:v1 .
 		docker push <ip/host of internal registry>:5000/mydebian:v1
 
-	Now pull the image into a pod:
-		kubectl run mytest --image 10.204.119.86:5000/mydebian:v1
+[*] Log into the registry from kuberenetes by creating a secret:
+	kubectl create secret docker-registry mydockercredentials --docker-server 192.168.1.200:5000 --docker-username docker-username --docker-password docker-password
 
-	Separate terminal, watch the events:
-		kubectl get events -w
+[*] Generate the yaml for editing:
+		kubectl run mytest --image 192.168.1.200:5000/mydebian:v2 --image-pull-policy Always --dry-run -o yaml > /tmp/mydebian.yaml
+	Add your secret, example:
+		vi /tmp/mydebian.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    run: mytest
+  name: mytest
+spec:
+  containers:
+  - image: 192.168.1.200:5000/mydebian:v2
+    imagePullPolicy: Always
+    name: mytest
+    resources: {}
+  imagePullSecrets:
+  -  name: mydockercredentials
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}
+
+[*] Create the pod:
+	kubectl create -f /tmp/mydebian.yaml
+
+[*] Congrats! Pod Deployed!
