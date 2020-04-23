@@ -6,7 +6,8 @@
 
 [*] docker-compose must be installed on Master
 	yum install epel-release -y
-	yum install docker-composer
+	yum update -y
+	yum install docker-compose -y
 
 [*] docker-compose files for private registry
 	https://github.com/justmeandopensource/docker/tree/master/docker-compose-files/docker-registry
@@ -76,6 +77,10 @@ DNS = "<Docker Server IP>"
 
 [*] Create user and password for access to docker registry:
 	htpasswd -Bbn docker-user docker-password  > /mnt/docker-registry/auth/htpasswd #  USE your own user and password!!
+
+[*] Enable port 5000 in firewalld.
+		firewall-cmd --permanent --add-port=5000/tcp
+		firewall-cmd --reload
 
 
 >>> Rough Guidelines on creating an internal registry
