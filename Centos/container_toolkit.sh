@@ -244,6 +244,12 @@ function install_calico_network_policy() {
     kubectl get pods --all-namespaces
 }
 
+function install_calicoctl() {
+    echo '[*] Installing calicoctl as a pod'
+    kubectl apply -f https://docs.projectcalico.org/manifests/calicoctl.yaml
+    kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
+}
+
 function install_rancher() {
     # Install Rancher on master kubernetes host.
     docker run -d --restart=unless-stopped -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher
@@ -297,7 +303,7 @@ function install_helm() {
 function install_tiller() {
     # Install for Tiller and Helm from https://devopscube.com/install-configure-helm-kubernetes/
     helm init --service-account=tiller --history-max 30
-0    sleep 5
+    sleep 5
     kubectl get deployment tiller-deploy -n kube-system
 }
 
@@ -387,6 +393,7 @@ case "$1" in
         set_cgroup_driver
         api_server_master_calico
         install_calico_network_policy
+        install_calicoctl
         ;;
     --worker-node)
         _run_as_root
