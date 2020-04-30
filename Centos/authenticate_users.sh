@@ -25,11 +25,11 @@ function _run_as_root() { #  Run as root
 function _help_menu() { #  Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo "[*] -u Authenticate a user, parse the user\'s name."
-    echo '          bash authenticate_user.sh -a iamauser'
+    echo "[*] -u    Authenticate a user, parse the user\'s name."
+    echo '              bash authenticate_user.sh -u iamauser'
     echo ''
-    echo '[*] -d Delete a RoleBind to revoke user access.'
-    echo '          bash authenticate_user -d iamauser-admin'
+    echo '[*] -d    Delete a RoleBind to revoke user access.'
+    echo '              bash authenticate_user -d iamauser-admin'
     echo ''
     echo ''
     exit
@@ -141,6 +141,8 @@ function kube_test_user_pods() { #  See the running pods for user
 
 
 function kube_create_user_admin_role_to_user_pods() { #  Create admin RoleBind for User to User namespace
+    # If you want to also bump up root privs:
+    # kubectl create clusterrolebinding root-cluster-admin-binding --clusterrole=cluster-admin --user=root
     echo '[*] Create admin RoleBind for user namespace'
     kubectl create rolebinding $USER-admin --namespace=$USER --clusterrole=admin --user=$USER
 }
