@@ -316,11 +316,19 @@ function install_helm_chart() {
     echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
 }
 
+function install_helm_three(){
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    ./get_helm.sh
+    helm repo add stable https://kubernetes-charts.storage.googleapis.com/
+    helm repo update
+}
+
 
 function install_pure_storage_pso() { #  Install the Pure Storage Orchestrator for Kubernetes.
     helm repo add pure http://purestorage.github.io/helm-charts
     helm repo update
-    helm search pure-k8s-plugin
+    helm search repo pure-csi
 }
 
 function clone_helm_chart() { #  Create the values.yaml file, then tell end user to update.
@@ -354,6 +362,11 @@ function install_pso_plugin_helm() {
     helm install --name pure-storage-driver pure/pure-csi --namespace pso-operator -f values.yaml
 }
 
+################################
+# ***Notes
+# Patch a Service to external Node port like so: (Good for on prem)
+#     kubectl patch service nginx-ingress-controller -p '{"spec":{"externalIPs":["192.168.1.101"]}}'
+# This will not be HA though
 
 ################################################################################################
 #    To Do List:                                                                               #
@@ -414,10 +427,11 @@ case "$1" in
         ;;
     --helm)
         _run_as_root
-        tiller_permissions_yaml
-        install_helm
-        install_tiller
-        install_helm_chart
+        install_helm_three
+        #tiller_permissions_yaml
+        #install_helm
+        #install_tiller
+        #install_helm_chart
         ;;
     --PSO-init)
         _run_as_root
