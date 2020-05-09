@@ -368,12 +368,6 @@ function install_pso_plugin_helm() {
 #     kubectl patch service nginx-ingress-controller -p '{"spec":{"externalIPs":["192.168.1.101"]}}'
 # This will not be HA though
 
-################################################################################################
-#    To Do List:                                                                               #
-#      Deploy charts                                                                           #
-################################################################################################
-
-
 ############################
 # Functions to be executed #
 ############################

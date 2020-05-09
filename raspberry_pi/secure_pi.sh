@@ -12,6 +12,19 @@ function run_as_root() { #  Best to run as root
     fi
 }
 
+function _help_menu() {
+    # Help menu
+    echo '[*] Help Menu:'
+    echo ''
+    echo '[*] --ubuntu     If running Ubuntu 18.04 ARM, run this to secure Ubuntu.'
+    echo '                      bash secure_pi.sh --ubuntu'
+    echo ''
+    echo '[*] --raspbian   If running Raspbian, run this to secure Raspbian.'
+    echo '                      bash secure_pi.sh --raspbian'
+    echo ''
+    exit
+}
+
 function set_keyboard_english() { #  Update keyboard to English US
     /bin/echo -e '[*] Setting Keyboard to English (US)'
     /bin/sed -i 's/gb/us/g' /etc/default/keyboard
@@ -36,7 +49,14 @@ function create_node_user() { #  Set the new password for node
     /bin/echo -e '[*] Creating user node'
     /usr/bin/sudo /usr/sbin/useradd node -m -s /bin/bash -U
     /bin/echo -e "$password_node_variable\n$password_node_variable\n" | /usr/bin/passwd node
+}
+
+function raspbian_node_user_groups() { #  Add the correct groups for the node user.
     /usr/bin/sudo usermod -a -G adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi node
+}
+
+function ubuntu_node_user_groups() { #  Add the correct groups for the node user.
+    /usr/bin/sudo usermod -a -G ubuntu,adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,lxd,netdev node
 }
 
 function config_node_ssh_keys() { #  Create Admin User Secure File Structure SSH
@@ -90,22 +110,31 @@ function ask_for_hostname() { #  Ask for the users new root password
     read -r -p "New Hostname: " user_requested_hostname
 }
 
-function set_hostname() { #  Set the new password for the root user.
-    /bin/echo "[*] Setting hostname to "$user_requested_hostname" password"
+function set_hostname() { #  Request hostname.
+    /bin/echo "[*] Setting hostname to "$user_requested_hostname""
     /usr/bin/hostnamectl set-hostname $user_requested_hostname
 }
 
-function cleanup_etc_hosts() { #  Add new hostname to /etc/hosts and remove the raspberrypi hostname
+function cleanup_etc_hosts() { #  Remove the raspberrypi hostname from /etc/hosts
     /bin/sed -i '/raspberrypi/d' /etc/hosts
-    echo "$(ifconfig | grep eth0 -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
 }
 
-function secure_sudo() { #  Require password when using /usr/bin/sudo for pi and node
+function set_etc_hosts_manually() { #  Add new hostname to /etc/hosts.
+    /bin/echo "$(ifconfig | grep eth0 -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
+}
+
+function secure_sudo_raspbian() { #  Require password when using /usr/bin/sudo for pi and node users.
     /bin/sed -i 's/NOPASSWD/PASSWD/g' /etc/sudoers.d/010_pi-nopasswd
     mv /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/010_pi-passwd
     /usr/bin/touch /etc/sudoers.d/010_node-passwd
     cat /etc/sudoers.d/010_pi-passwd > /etc/sudoers.d/010_node-passwd
     /bin/sed -i 's/pi/node/g' /etc/sudoers.d/010_node-passwd
+}
+
+function secure_sudo_ubuntu() { #  Require password when using /usr/bin/sudo for ubuntu or node users.
+    /bin/sed -i 's/NOPASSWD/PASSWD/g' /etc/sudoers.d/90-cloud-init-users
+    /bin/echo "# User rules for node" >> /etc/sudoers.d/90-cloud-init-users
+    /bin/echo "node ALL=(ALL) PASSWD:ALL" >> /etc/sudoers.d/90-cloud-init-users
 }
 
 function configure_sshd() { #  Add a Banner to ssh requiring permission to get into the Pi.
@@ -122,8 +151,18 @@ function configure_sshd() { #  Add a Banner to ssh requiring permission to get i
     /bin/sed -i 's/#PermitRootLogin\ prohibit-password/PermitRootLogin\ yes/g' /etc/ssh/sshd_config
     /bin/sed -i 's/#PasswordAuthentication\ yes/PasswordAuthentication\ no/g' /etc/ssh/sshd_config
     /bin/sed -i 's/#AuthorizedKeysFile/AuthorizedKeysFile/g' /etc/ssh/sshd_config
-    /bin/echo -e "AllowUsers node" >> /etc/ssh/sshd_config
-    /bin/echo -e "DenyUsers pi" >> /etc/ssh/sshd_config
+    #/bin/echo -e "AllowUsers node" >> /etc/ssh/sshd_config
+}
+
+function deny_default_user() { #  If default users exist, blacklist them from ssh.
+    if [ $(/bin/cat /etc/passwd | /bin/grep pi | /usr/bin/wc -l) -eq 1 ]; then
+        /bin/echo -e "DenyUsers pi" >> /etc/ssh/sshd_config
+    elif [ $(/bin/cat /etc/passwd | /bin/grep ubuntu | /usr/bin/wc -l) -eq 1 ]; then
+        /bin/echo -e "DenyUsers ubuntu" >> /etc/ssh/sshd_config
+    fi
+}
+
+function enable_restart_ssh() { # Enable and restart ssh.
     /usr/bin/sudo systemctl enable ssh
     /usr/bin/sudo systemctl restart ssh
 }
@@ -157,22 +196,63 @@ function reboot_pi() { #  Reboot the pi
 # Functions to run on execute. #
 ################################
 
-run_as_root
-set_keyboard_english
-create_pi_password
-set_pi_password
-create_node_password
-create_node_user
-config_node_ssh_keys
-create_root_password
-set_root_password
-config_root_ssh_keys
-ask_for_hostname
-set_hostname
-cleanup_etc_hosts
-secure_sudo
-configure_sshd
-update_apt
-install_iptables
-install_firewall
-reboot_pi
+############################
+# Functions to be executed #
+############################
+
+
+case "$1" in
+    --ubuntu)
+        run_as_root
+        create_node_password
+        create_node_user
+        ubuntu_node_user_groups
+        config_node_ssh_keys
+        create_root_password
+        set_root_password
+        config_root_ssh_keys
+        ask_for_hostname
+        set_hostname
+        set_etc_hosts_manually
+        secure_sudo_ubuntu
+        configure_sshd
+        deny_default_user
+        enable_restart_ssh
+        update_apt
+        reboot_pi
+        ;;
+    --raspbian)
+        run_as_root
+        set_keyboard_english
+        create_pi_password
+        set_pi_password
+        create_node_password
+        create_node_user
+        raspbian_node_user_groups
+        config_node_ssh_keys
+        create_root_password
+        set_root_password
+        config_root_ssh_keys
+        ask_for_hostname
+        set_hostname
+        cleanup_etc_hosts
+        set_etc_hosts_manually
+        secure_sudo_raspbian
+        configure_sshd
+        deny_default_user
+        enable_restart_ssh
+        update_apt
+        install_iptables
+        install_firewall
+        reboot_pi
+        ;;
+    -h)
+        _help_menu
+        ;;
+    --help)
+        _help_menu
+        ;;
+    *)
+        _help_menu
+        ;;
+esac
