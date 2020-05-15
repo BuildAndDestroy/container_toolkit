@@ -234,10 +234,35 @@ function install_helm_three(){
 }
 
 ############
-# traefik
+# k3s stores
 
-function isntall_traefik_loadbalancer() { #  Install a loadbalancer for pi.
-    helm install traefik stable/traefik
+function instal_openfaas() { #  Install openfaas pods and cli tool.
+    echo '[*] Installing Open-Faas pods and openfaas-cli.'
+    git clone https://github.com/openfaas/faas-netes.git
+    git clone https://github.com/openfaas/store
+    curl -sLS https://cli.openfaas.com | sh -
+    kubectl apply -f ./faas-netes/namespaces.yml
+    kubectl apply -f ./faas-netes/yaml_armhf/
+    echo 'sleeping 30 seconds before deploying pods'
+    sleep 30
+    faas-cli store deploy nodeinfo --gateway 127.0.0.1:31112
+    faas-cli store deploy certinfo --gateway 127.0.0.1:31112
+    faas-cli store deploy figlet --gateway 127.0.0.1:31112
+}
+
+function test_openfaas() { #  Test openfaas pods
+    echo "[*] Testing nodeinfo"
+    echo -n verbose | faas-cli invoke nodeinfo --gateway 127.0.0.1:31112
+    echo "[*] Testing certinfo"
+    curl http://127.0.0.1:31112/function/certinfo -d "google.com"
+    echo "[*] Testing node figlet"
+    echo 'yolo' | faas-cli invoke figlet --gateway http://127.0.0.1:31112
+    echo '[*] GUI should be at http://127.0.0.1:31112/ui/ or open the firewall for this port to reach remotely.'
+}
+
+function install_arkade() { #  Install the arkade store for k3s apps.
+    echo '[*] Installing Arkade'
+    curl -sLS https://dl.get-arkade.dev | sudo sh -
 }
 
 
