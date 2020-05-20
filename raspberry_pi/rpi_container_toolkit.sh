@@ -16,29 +16,42 @@ function _help_menu() {
     # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] --init       Run first on every pi! Then move on to --master OR --worker. TURNED OFF FOR NOW.'
-    echo '                      bash rpi_container_toolkit.sh --init'
-    echo ''
-    echo '[*] --master     Install full Kubernetes k8s MASTER NODE Calico and Docker. DOES NOT WORK'
-    echo '                      bash rpi_container_toolkit.sh --master'
-    echo ''
-    echo '[*] --worker     Install full Kubernetes k8s WORKER NODE and Docker. DOES NOT WORK'
-    echo '                      bash rpi_container_toolkit.sh --worker'
-    echo ''
+    #echo '[*] --init       Run first on every pi! Then move on to --master OR --worker. TURNED OFF FOR NOW.'
+    #echo '                      bash rpi_container_toolkit.sh --init'
+    # echo ''
+    # echo '[*] --master     Install full Kubernetes k8s MASTER NODE Calico and Docker. DOES NOT WORK'
+    # echo '                      bash rpi_container_toolkit.sh --master'
+    # echo ''
+    # echo '[*] --worker     Install full Kubernetes k8s WORKER NODE and Docker. DOES NOT WORK'
+    # echo '                      bash rpi_container_toolkit.sh --worker'
+    # echo ''
     echo '[*] --rancherk3s-master    The generic k3s install for Master.'
-    echo '                     bash rpi_container_toolkit.sh --rancherk3s-master'
+    echo '                             bash rpi_container_toolkit.sh --rancherk3s-master'
     echo ''
     echo '[*] --rancherk3s-worker    The generic k3s install for Worker.'
-    echo '                     bash rpi_container_toolkit.sh --rancherk3s-worker'
+    echo '                             bash rpi_container_toolkit.sh --rancherk3s-worker'
+    echo ''
+    echo ''
+    echo '    ###### FOR THE DOCKER USERS - use below options to install Docker instead of containerd ######'
+    echo ''
     echo ''
     echo '[*] --rancherk3s-master-docker    K3s install for Master but with Docker instead of containerd.'
-    echo '                     bash rpi_container_toolkit.sh --rancherk3s-master-docker'
+    echo '                                    bash rpi_container_toolkit.sh --rancherk3s-master-docker'
     echo ''
     echo '[*] --rancherk3s-worker-docker    K3s install for Worker but with Docker instead of containerd.'
-    echo '                     bash rpi_container_toolkit.sh --rancherk3s-worker-docker'
+    echo '                                    bash rpi_container_toolkit.sh --rancherk3s-worker-docker'
     echo ''
-    echo '[*] --helm       Install Helm3 to Master'
-    echo '                      bash rpi_container_toolkit.sh --helm'
+    echo ''
+    echo '       >>> Use below to install frameworks known to work on k3s.'
+    echo ''
+    echo '[*] --helm-master          Install Helm3 to Master'
+    echo '                               bash rpi_container_toolkit.sh --helm'
+    echo ''
+    echo '[*] --openfaas-master      Install on master - openfaas repo and cli tools.'
+    echo '                               bash rpi_container_toolkit.sh --openfaas-master'
+    echo ''
+    echo '[*] --arkade-master         Install on master - arkade repo and cli tools.'
+    echo '                               bash rpi_container_toolkit.sh --arkade-master'
     echo ''
     exit
 }
@@ -196,8 +209,8 @@ function k3s_master_kubernetes() {
 
 function k3s_systemctl_docker() {
     /usr/local/bin/k3s-killall.sh
-    /bin/sed -i 's@server\ \@@g' /etc/systemd/system/k3s.service
-    /bin/sed -i 's@ExecStart=/usr/local/bin/k3s\ \@ExecStart=/usr/local/bin/k3s\ server\ --docker@g' /etc/systemd/system/k3s.service
+    /bin/sed -i 's#server\ \\##g' /etc/systemd/system/k3s.service
+    /bin/sed -i 's#ExecStart=/usr/local/bin/k3s\ \\#ExecStart=/usr/local/bin/k3s\ server\ --docker#g' /etc/systemd/system/k3s.service
     systemctl daemon-reload
     systemctl stop k3s
     systemctl start k3s
@@ -207,7 +220,7 @@ function k3s_systemctl_docker() {
 # k3s Worker
 
 function k3s_worker_kubernetes() {
-    /bin/echo '[*] Type in the Master token file from /var/lib/rancher/k3s/server/node-token'
+    /bin/echo '[*] Type in the Master token from /var/lib/rancher/k3s/server/node-token'
     read -r -p "Node Token: " k3s_token
 
     /bin/echo '[*] Type in the Master nodes IP Address.'
@@ -236,7 +249,7 @@ function install_helm_three(){
 ############
 # k3s stores
 
-function instal_openfaas() { #  Install openfaas pods and cli tool.
+function install_openfaas() { #  Install openfaas pods and cli tool.
     echo '[*] Installing Open-Faas pods and openfaas-cli.'
     git clone https://github.com/openfaas/faas-netes.git
     git clone https://github.com/openfaas/store
@@ -322,9 +335,16 @@ case "$1" in
         k3s_worker_kubernetes
         reboot_the_pi
         ;;
-    --helm)
+    --helm-master)
         run_as_root
         install_helm_three
+        ;;
+    --openfaas-master)
+        install_openfaas
+        test_openfaas
+        ;;
+    --arkade-master)
+        install_arkade
         ;;
     -h)
         _help_menu
