@@ -1,0 +1,343 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-namespace
+---
+//Private Docker Registry Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: myregistrykey
+  namespace: project-namespace
+data:
+  .dockerconfigjson: {{ BASE64 OUTPUT OF ~/.docker/config.json }}
+type: kubernetes.io/dockerconfigjson
+---
+// SQL Root Password
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-root-secret
+  namespace: project-namespace
+type: Opaque
+data:
+  password: {{ BASE64 OUTPUT OF PASSWORD }}
+---
+// SQL db's, user, and password
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-db-secret
+  namespace: project-namespace
+type: Opaque
+data:
+  username: {{ BASE64 OUTPUT OF DB USERNAME }}
+  password: {{ BASE64 OUTPUT OF DB PASSWORD }}
+  database-one: {{ BASE64 OUTPUT OF DATABASE NAME 1 }}
+  database-two: {{ BASE64 OUTPUT OF DATABASE NAME 2 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: first-db-service # MARK B
+  namespace: project-namespace
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+  selector:
+          app: mariadb-first-db-deploy # Must match with `MARK A`
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mariadb-storage-db-one
+  namespace: project-namespace
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+          path: /path/to/nfs/mount
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb-storage-db-one
+  namespace: project-namespace
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: project-namespace
+  name: mariadb-first-db-deploy # MARK A
+  labels:
+    app: mariadb-first-db-deploy # MARK A
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb-first-db-deploy # MARK A
+  template:
+    metadata:
+      labels:
+        app: mariadb-first-db-deploy # MARK A
+    spec:
+      containers:
+      - name: mariadb-first-db-deploy
+        image: example-private.registry.com/mariadb:latest
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-root-secret # MARK P
+              key: password
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: database-one
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: password
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+          - name: mariadb-persistent-storage-db-one
+            mountPath: /var/lib/mysql
+        imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      volumes:
+        - name: mariadb-persistent-storage-db-one
+          persistentVolumeClaim:
+            claimName: mariadb-storage-db-one # MARK Z
+      imagePullSecrets:
+      - name: myregistrykey
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: second-db-service # MARK B
+  namespace: project-namespace
+spec:
+  type: ClusterIP
+  ports:
+  - port: 3306
+    targetPort: 3306
+    protocol: TCP
+  selector:
+          app: mariadb-second-db-deploy # Must match with `MARK A`
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mariadb-storage-db-two
+  namespace: project-namespace
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /path/to/nfs/mount
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb-storage-db-two
+  namespace: project-namespace
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: project-namespace
+  name: mariadb-second-db-deploy # MARK A
+  labels:
+    app: mariadb-second-db-deploy # MARK A
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb-second-db-deploy # MARK A
+  template:
+    metadata:
+      labels:
+        app: mariadb-second-db-deploy # MARK A
+    spec:
+      containers:
+      - name: mariadb-second-db-deploy
+        image: example-private.registry.com/mariadb:latest
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-root-secret # MARK P
+              key: password
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: database-two
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: password
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+          - name: mariadb-persistent-storage-db-two
+            mountPath: /var/lib/mysql
+        imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      volumes:
+        - name: mariadb-persistent-storage-db-two
+          persistentVolumeClaim:
+            claimName: mariadb-storage-db-two # MARK Z
+      imagePullSecrets:
+      - name: myregistrykey
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: project-website-loadbalancer
+  namespace: project-namespace
+spec:
+  selector:
+    app: project-namespace
+  clusterIP: {{ IPV4 WITHIN KUBERNETES /16 NETWORK }}
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: http
+    nodePort: 31105
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  - name: https
+    nodePort: 31106
+    port: 443
+    protocol: TCP
+    targetPort: 443
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: project-website-ingress
+  namespace: project-namespace
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: {{ NAMESPACE OF CERT-MANAGER DEPLOYMENT }}
+spec:
+  rules:
+  - host: {{ your.domain.com }}
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: project-website
+          servicePort: 80
+  tls:
+  - hosts:
+    - your.domain.com
+    secretName: your-domain-com-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: project-website
+  namespace: project-namespace
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: project-website
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: project-website
+  namespace: project-namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: project-website
+  template:
+    metadata:
+      labels:
+        app: project-website
+    spec:
+      containers:
+      - name: project-website
+        image: example-private.registry.com/website:latest
+        env:
+        - name: MYSQL_DB_HOST
+          value: mariadb-first-db-deploy
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-root-secret # MARK P
+              key: password
+        - name: MYSQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: database-one
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-db-secret
+              key: password
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+      imagePullSecrets:
+      - name: myregistrykey
