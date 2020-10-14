@@ -1,0 +1,4 @@
+Deploy Traefik as a proxy, using helm chart:
+    helm install traefik stable/traefik --set dashboard.enabled=true,dashboard.domain=dashboard.traefik,rbac.enabled=true --namespace kube-system
+Example yaml to test with:
+    kubectl create -f nginx-traefik.yaml

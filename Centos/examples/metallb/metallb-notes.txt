@@ -1,0 +1,7 @@
+https://metallb.universe.tf/installation/
+Create the deployment
+    kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/namespace.yaml
+    kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.9.3/manifests/metallb.yaml
+    kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+Create a configmap - add your ip's that metallb can use to hand out
+    kubectl create -f nginx-metallb.yaml
