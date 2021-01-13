@@ -174,6 +174,11 @@ function install_calicoctl() {
     kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
 }
 
+function set_felix_loose_true() {
+    echo '[*] Ignoring loose RPF for Felix.'
+    kubectl -n kube-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true
+}
+
 function install_rancher() {
     # Install Rancher on master kubernetes host.
     docker run -d --restart=unless-stopped -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher
@@ -311,6 +316,7 @@ case "$1" in
         api_server_master_calico
         install_calico_network_policy
         install_calicoctl
+        set_felix_loose_true
         ;;
     --worker-node)
         _run_as_root
