@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# https://linuxconfig.org/how-to-install-kubernetes-on-ubuntu-20-04-focal-fossa-linux
 
 #########################################################################
 #                  Automate the container install process.              #
@@ -20,33 +21,33 @@ function _help_menu() {
     echo '[*] Help Menu:'
     echo ''
     echo '[*] --master-calico   Install Kubernetes MASTER NODE Calico and Docker.'
-    echo '                      bash centos7_container_toolkit.sh -m'
+    echo '                      bash container_toolkit.sh --master-calico'
     echo ''
     echo '[*] --worker-node     Install Kubernetes WORKER NODE and Docker'
-    echo '                      bash centos7_container_toolkit.sh --node'
+    echo '                      bash container_toolkit.sh --worker-node'
     echo ''
     echo '[*] --docker     Install ONLY Docker.'
-    echo '                 bash centos7_container_toolkit.sh --docker'
+    echo '                 bash container_toolkit.sh --docker'
     echo ''
     echo '[*] --rancher    Install a ONLY Rancher constainer.'
-    echo '                 bash centos7_container_toolkit.sh --rancher'
+    echo '                 bash container_toolkit.sh --rancher'
     echo ''
     echo '[*] --helm       Apply this option to install helm.'
-    echo '                 bash centos7_container_toolkit.sh --helm'
+    echo '                 bash container_toolkit.sh --helm'
     echo ''
     echo '[*] --PSO-init   After Kubernetes is up, run this first to install Pure Storage PSO.'
-    echo '                 bash centos7_container_toolkit.sh --PSO-init'
+    echo '                 bash container_toolkit.sh --PSO-init'
     echo ''
     echo '    >>> --PSO-kube OR --PSO-helm, not both.'
     echo ''
     echo '[*] --PSO-kube   After PSO-init ws ran, run this to install PSO into kubectl.'
-    echo '                 bash centos7_container_toolkit.sh --PSO-kube'
+    echo '                 bash container_toolkit.sh --PSO-kube'
     echo ''
     echo '[*] --PSO-helm   After PSO-init ws ran run this to install PSO into helm.'
-    echo '                 bash centos7_container_toolkit.sh --PSO-helm'
+    echo '                 bash container_toolkit.sh --PSO-helm'
     echo ''
     echo '[*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.'
-    echo '                 bash centos7_container_toolkit.sh --clean'
+    echo '                 bash container_toolkit.sh --clean'
     echo ''
     exit
 }
@@ -55,21 +56,19 @@ function _help_menu() {
 function cleanup_docker() {
     # Cleanup any currently installed docker package.
     echo '[*] Removing old Docker packages.'
-    yum remove docker \
-        docker-client \
-        docker-client-latest \
-        docker-common \
-        docker-latest \
-        docker-latest-logrotate \
-        docker-logrotate \
-        docker-engine
+    apt remove docker docker-engine docker.io containerd runc -y
 }
 
-function setup_repo() {
+function install_dependencies() {
     # Setup packages for docker.
     echo '[*] Installing packages to support Docker.'
-    yum install -y yum-utils device-mapper-persistent-data lvm2 wget
-    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    apt update -y
+    apt install \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg-agent \
+    software-properties-common -y
 }
 
 
@@ -77,8 +76,12 @@ function install_docker() {
     # Install docker. Retry until the key imports.
     echo '[*] Installing Docker.'
     while [ "$(/usr/bin/which docker)" == "" ]; do
-        yum install -y docker-ce docker-ce-cli containerd.io
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
         sleep 5
+        apt-key fingerprint 0EBFCD88
+        add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+        apt update -y
+        apt install docker-ce docker-ce-cli containerd.io -y
     done
 }
 
@@ -96,28 +99,7 @@ function test_docker() {
 }
 
 function set_hostname() {
-    echo "$(ifconfig | grep eth0 -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
-}
-
-function disable_selinux() {
-    # Disable SELinux since kubernetes does nto support.
-    echo '[*] Disabling SELinux'
-    setenforce 0
-    sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
-    echo '[*] Status for SELinux:'
-    getenforce
-}
-
-function enable_br_netfilter() {
-    # Kernel module enabled so packets traversing the bridge
-    # are processed through iptables. Allows nodes to communicate.
-    echo '[*] Enabling br_netfilter kernel module.'
-    modprobe br_netfilter
-}
-
-function enable_bridge_iptables() {
-    # Reboots do not like this, run after the reboot.
-    echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+    echo "$(ifconfig | grep ens -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
 }
 
 function disable_swap() {
@@ -131,73 +113,11 @@ function disable_swap() {
 
 function install_kubernetes() {
     # Set kubernetes repo and install kubernetes
-    cat <<EOF > /etc/yum.repos.d/kubernetes.repo
-[kubernetes]
-name=Kubernetes
-baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
-        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
-EOF
-    yum install -y kubelet kubeadm kubectl
+    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add
+    apt-add-repository "deb http://apt.kubernetes.io/ kubernetes-xenial main"
+    apt install -y kubeadm kubelet kubectl kubernetes-cni
     systemctl start docker && systemctl enable docker
     systemctl start kubelet && systemctl enable kubelet
-}
-
-function configure_master_firewall() {
-    # Update firewall to allow inbound traffic.
-    firewall-cmd --permanent --add-port=80/tcp
-    firewall-cmd --permanent --add-port=443/tcp
-    firewall-cmd --permanent --add-port=22/tcp
-    firewall-cmd --permanent --add-port=2376/tcp
-    firewall-cmd --permanent --add-port=2379/tcp
-    firewall-cmd --permanent --add-port=2380/tcp
-    firewall-cmd --permanent --add-port=4789/udp
-    firewall-cmd --permanent --add-port=6443/tcp
-    firewall-cmd --permanent --add-port=6783-6784/udp
-    firewall-cmd --permanent --add-port=8472/udp
-    firewall-cmd --permanent --add-port=9099/tcp
-    firewall-cmd --permanent --add-port=10250/tcp
-    firewall-cmd --permanent --add-port=10251/tcp
-    firewall-cmd --permanent --add-port=10252/tcp
-    firewall-cmd --permanent --add-port=10254/tcp
-    firewall-cmd --permanent --add-port=10255/tcp
-    firewall-cmd --permanent --add-port=30000-32767/tcp
-    firewall-cmd --permanent --add-port=30000-32767/udp
-    firewall-cmd --add-masquerade --permanent
-    firewall-cmd --reload
-}
-
-function configure_node_firewall () {
-    # Update firewall to allow inbound traffic.
-    firewall-cmd --permanent --add-port=80/tcp
-    firewall-cmd --permanent --add-port=443/tcp
-    firewall-cmd --permanent --add-port=22/tcp
-    firewall-cmd --permanent --add-port=2376/tcp
-    firewall-cmd --permanent --add-port=2379/tcp
-    firewall-cmd --permanent --add-port=2380/tcp
-    firewall-cmd --permanent --add-port=4789/udp
-    firewall-cmd --permanent --add-port=6443/tcp
-    firewall-cmd --permanent --add-port=6783-6784/udp
-    firewall-cmd --permanent --add-port=8472/udp
-    firewall-cmd --permanent --add-port=9099/tcp
-    firewall-cmd --permanent --add-port=10250/tcp
-    firewall-cmd --permanent --add-port=10251/tcp
-    firewall-cmd --permanent --add-port=10252/tcp
-    firewall-cmd --permanent --add-port=10254/tcp
-    firewall-cmd --permanent --add-port=10255/tcp
-    firewall-cmd --permanent --add-port=30000-32767/tcp
-    firewall-cmd --permanent --add-port=30000-32767/udp
-    firewall-cmd --add-masquerade --permanent
-    firewall-cmd --reload
-}
-
-function update_bridge() {
-    echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
-    echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
-    sysctl -p
 }
 
 function set_cgroup_driver() {
@@ -224,6 +144,11 @@ EOF
     systemctl restart kubelet
 }
 
+function update_bridge() {
+    echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
+    echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
+    sysctl -p
+}
 
 function api_server_master_calico() {
     # Beginning of Master node setup.
@@ -233,7 +158,6 @@ function api_server_master_calico() {
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
 }
-
 
 function install_calico_network_policy() {
     # Install the calico pod network.
@@ -291,7 +215,6 @@ EOF
     kubectl apply -f helm-rbac.yaml
 }
 
-
 function install_helm() {
     # Install helm once.
     echo "[*] Installing helm."
@@ -300,16 +223,8 @@ function install_helm() {
     ./install-helm.sh
 }
 
-function install_tiller() {
-    # Install for Tiller and Helm from https://devopscube.com/install-configure-helm-kubernetes/
-    helm init --service-account=tiller --history-max 30
-    sleep 5
-    kubectl get deployment tiller-deploy -n kube-system
-}
-
 function install_helm_chart() {
     echo '[*] Updating firewall and installing helm dashboard.'
-    firewall-cmd --permanent --add-port=8443/tcp
     echo '[*] Add nodes to your cluster, this will allow Tiller to deploy.'
     echo '[*] Once the tiller container deploys, run both commands:'
     echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
@@ -320,10 +235,9 @@ function install_helm_three(){
     curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
     chmod 700 get_helm.sh
     ./get_helm.sh
-    helm repo add stable https://kubernetes-charts.storage.googleapis.com/
+    helm repo add stable https://charts.helm.sh/stable
     helm repo update
 }
-
 
 function install_pure_storage_pso() { #  Install the Pure Storage Orchestrator for Kubernetes.
     helm repo add pure http://purestorage.github.io/helm-charts
@@ -341,8 +255,8 @@ function clone_helm_chart() { #  Create the values.yaml file, then tell end user
     echo "        pureBackend: block or file"
     echo "        Delete anything not being used."
     echo ""
-    mv centos7_container_toolkit.sh helm-charts/operator-csi-plugin
-    echo "Then run centos7_container_toolkit.sh --PSO-kube OR --PSO-helm, not both."
+    mv container_toolkit.sh helm-charts/operator-csi-plugin
+    echo "Then run container_toolkit.sh --PSO-kube OR --PSO-helm, not both."
 }
 
 function install_pso_plugin_kube() { #  Install the plugin using values.yaml
@@ -377,7 +291,7 @@ case "$1" in
     --docker)
         _run_as_root
         cleanup_docker
-        setup_repo
+        install_dependencies
         install_docker
         start_enable_docker
         test_docker
@@ -385,17 +299,13 @@ case "$1" in
     --master-calico)
         _run_as_root
         cleanup_docker
-        setup_repo
+        install_dependencies
         install_docker
         start_enable_docker
         test_docker
         set_hostname
-        disable_selinux
-        enable_br_netfilter
-        enable_bridge_iptables
         disable_swap
         install_kubernetes
-        configure_master_firewall
         update_bridge
         set_cgroup_driver
         api_server_master_calico
@@ -405,17 +315,13 @@ case "$1" in
     --worker-node)
         _run_as_root
         cleanup_docker
-        setup_repo
+        install_dependencies
         install_docker
         start_enable_docker
         test_docker
         set_hostname
-        disable_selinux
-        enable_br_netfilter
-        enable_bridge_iptables
         disable_swap
         install_kubernetes
-        configure_node_firewall
         update_bridge
         set_cgroup_driver
         ;;
@@ -437,9 +343,11 @@ case "$1" in
         install_pso_plugin_helm
         ;;
     --rancher)
+        echo 'Needs Testing'
+        exit
         _run_as_root
         cleanup_docker
-        setup_repo
+        install_dependencies
         install_docker
         start_enable_docker
         test_docker
@@ -448,6 +356,8 @@ case "$1" in
         install_rancher
         ;;
     --clean)
+        echo 'Needs Testing'
+        exit
         _run_as_root
         cleanup_workers
         ;;
