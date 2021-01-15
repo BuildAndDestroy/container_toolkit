@@ -2,7 +2,7 @@ Automate the install of Kubernetes and Docker.
 Calico networking is here to stay.
 
 
-# Help Menu - Centos 7
+# Help Menu - Centos 7 and Ubuntu 20.04
 
 
 ```
@@ -10,33 +10,33 @@ Calico networking is here to stay.
 [*] Help Menu:
 
 [*] --master-calico   Install Kubernetes MASTER NODE Calico and Docker.
-                      bash container_toolkit.sh -m
+                      ./container_toolkit.sh --master-calico
 
 [*] --worker-node     Install Kubernetes WORKER NODE and Docker
-                      bash container_toolkit.sh --node
+                      ./container_toolkit.sh --worker-node
 
 [*] --docker     Install ONLY Docker.
-                 bash container_toolkit.sh --docker
+                 ./container_toolkit.sh --docker
 
 [*] --rancher    Install a ONLY Rancher constainer.
-                 bash container_toolkit.sh --rancher
+                 ./container_toolkit.sh --rancher
 
 [*] --helm       Apply this option to install helm.
-                 bash container_toolkit.sh --helm
+                 ./container_toolkit.sh --helm
 
 [*] --PSO-init   After Kubernetes is up, run this first to install Pure Storage PSO.
-                 bash container_toolkit.sh --PSO-init
+                 ./container_toolkit.sh --PSO-init
 
     >>> --PSO-kube OR --PSO-helm, not both.
 
 [*] --PSO-kube   After PSO-init ws ran, run this to install PSO into kubectl.
-                 bash container_toolkit.sh --PSO-kube
+                 ./container_toolkit.sh --PSO-kube
 
 [*] --PSO-helm   After PSO-init ws ran run this to install PSO into helm.
-                 bash container_toolkit.sh --PSO-helm
+                 ./container_toolkit.sh --PSO-helm
 
 [*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.
-                 bash container_toolkit.sh --clean
+                 ./container_toolkit.sh --clean
 ```
 
 
@@ -83,23 +83,11 @@ k8-node3         Ready    <none>   2m55s   v1.16.2
 ```
 
 
-## Install Helm On Master
-
-* This currently only works for Calico, run on Master.
-
-```./container_toolkit.sh --helm```
-
-```
-kubectl get deployment tiller-deploy -n kube-system
-NAME            READY   UP-TO-DATE   AVAILABLE   AGE
-tiller-deploy   1/1     1            1           32s
-```
-
-
 ## Install Dockerfile
 ```
 docker build -t container_toolkit .
-docker run --rm -it container_toolkit /opt/container_toolkit/container_toolkit.sh -h
+docker run --rm -it container_toolkit /opt/container_toolkit/Ubuntu/container_toolkit.sh -h
+docker run --rm -it container_toolkit /opt/container_toolkit/Centos/container_toolkit.sh -h
 ```
 
 
