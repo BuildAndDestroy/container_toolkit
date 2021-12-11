@@ -161,7 +161,7 @@ function api_server_master_calico() {
 
 function install_calico_network_policy() {
     # Install the calico pod network.
-    curl https://docs.projectcalico.org/v3.9/manifests/calico.yaml -O
+    curl https://docs.projectcalico.org/manifests/calico.yaml -O
     sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
     kubectl apply -f calico.yaml
     echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
