@@ -16,7 +16,7 @@ function _help_menu() {
     # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] --ubuntu     If running Ubuntu 18.04 ARM, run this to secure Ubuntu.'
+    echo '[*] --ubuntu     If running Ubuntu 21.10 ARM, run this to secure Ubuntu.'
     echo '                      bash secure_pi.sh --ubuntu'
     echo ''
     echo '[*] --raspbian   If running Raspbian, run this to secure Raspbian.'
