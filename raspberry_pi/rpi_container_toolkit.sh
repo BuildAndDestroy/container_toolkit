@@ -154,7 +154,7 @@ function install_kubernetes() { #  Install Kubernetes
 # }
 
 function cgroup_to_bootfile() { #  Must use cgroup memory, needed in boot file
-    sed -i 's/$/\ cgroup_enable=cpuset\ cgroup_memory=1\ cgroup_enable=memory/' /boot/firmware/nobtcmd.txt
+    sed -i 's/$/\ cgroup_enable=cpuset\ cgroup_memory=1\ cgroup_enable=memory/' /boot/firmware/cmdline.txt
 }
 
 function reboot_the_pi() {
@@ -203,7 +203,10 @@ function join_worker_node() {
 # k3s Master
 
 function k3s_master_kubernetes() {
-    curl -sfL https://get.k3s.io | sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --cluster-cidr=10.1.0.0/16" K3S_KUBECONFIG_MODE="644" sh -
+    # curl -sfL https://get.k3s.io | sh -
+    wget -c https://docs.projectcalico.org/manifests/calico.yaml
+    kubectl apply -f calico.yaml
     /bin/cat /var/lib/rancher/k3s/server/node-token
 }
 
@@ -228,7 +231,8 @@ function k3s_worker_kubernetes() {
 
     export K3S_URL="https://"$master_ip":6443"
     export K3S_TOKEN=""$k3s_token""
-    curl -sfL https://get.k3s.io | sh -
+    pi_hostname=$(/usr/bin/hostname)
+    curl -sfL https://get.k3s.io | K3S_TOKEN=""$k3s_token"" K3S_URL="https://"$master_ip":6443" K3S_NODE_NAME=""$pi_hostname"" sh -
 }
 
 #################
@@ -310,20 +314,20 @@ case "$1" in
         ;;
     --rancherk3s-master)
         cgroup_to_bootfile
-        ufw_ports_allowed
+        # ufw_ports_allowed
         k3s_master_kubernetes
         reboot_the_pi
         ;;
     --rancherk3s-worker)
         cgroup_to_bootfile
-        ufw_ports_allowed
+        # ufw_ports_allowed
         k3s_worker_kubernetes
         reboot_the_pi
         ;;
     --rancherk3s-master-docker)
         cgroup_to_bootfile
         install_docker
-        ufw_ports_allowed
+        # ufw_ports_allowed
         k3s_master_kubernetes
         k3s_systemctl_docker
         reboot_the_pi
@@ -331,7 +335,7 @@ case "$1" in
     --rancherk3s-worker-docker)
         cgroup_to_bootfile
         install_docker
-        ufw_ports_allowed
+        # ufw_ports_allowed
         k3s_worker_kubernetes
         reboot_the_pi
         ;;

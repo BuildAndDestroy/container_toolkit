@@ -179,6 +179,16 @@ function install_iptables() { #  Install persisent iptables
     /usr/bin/sudo apt-get install iptables-persistent -y
 }
 
+function cgroup_to_bootfile() { #  Must use cgroup memory, needed in boot file
+    sed -i 's/$/\ cgroup_enable=cpuset\ cgroup_memory=1\ cgroup_enable=memory/' /boot/firmware/cmdline.txt
+}
+
+function enable_iptables_for_k3s() {
+    /usr/bin/sudo /usr/sbin/iptables -F
+    /usr/bin/sudo /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy
+    /usr/bin/sudo /usr/bin/update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+}
+
 function install_firewall() { #  Install the firewall and allow port 22
     /usr/bin/sudo apt-get install ufw -y
     /usr/bin/sudo ufw enable
@@ -218,6 +228,8 @@ case "$1" in
         configure_sshd
         deny_default_user
         enable_restart_ssh
+        enable_iptables_for_k3s
+        cgroup_to_bootfile
         update_apt
         reboot_pi
         ;;
