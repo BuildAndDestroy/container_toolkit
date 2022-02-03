@@ -203,7 +203,7 @@ function join_worker_node() {
 # k3s Master
 
 function k3s_master_kubernetes() {
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --cluster-cidr=10.1.0.0/16" K3S_KUBECONFIG_MODE="644" sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --cluster-cidr=10.1.0.0/16 --disable=traefik" K3S_KUBECONFIG_MODE="644" INSTALL_K3S_VERSION="v1.20.14+k3s2"  sh -
     # curl -sfL https://get.k3s.io | sh -
     wget -c https://docs.projectcalico.org/manifests/calico.yaml
     kubectl apply -f calico.yaml
@@ -232,7 +232,7 @@ function k3s_worker_kubernetes() {
     export K3S_URL="https://"$master_ip":6443"
     export K3S_TOKEN=""$k3s_token""
     pi_hostname=$(/usr/bin/hostname)
-    curl -sfL https://get.k3s.io | K3S_TOKEN=""$k3s_token"" K3S_URL="https://"$master_ip":6443" K3S_NODE_NAME=""$pi_hostname"" sh -
+    curl -sfL https://get.k3s.io | K3S_TOKEN=""$k3s_token"" K3S_URL="https://"$master_ip":6443" K3S_NODE_NAME=""$pi_hostname"" INSTALL_K3S_VERSION="v1.20.14+k3s2" sh -
 }
 
 #################
@@ -243,11 +243,11 @@ function k3s_worker_kubernetes() {
 # Helm
 
 function install_helm_three(){
-    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
-    chmod 700 get_helm.sh
-    ./get_helm.sh
-    helm repo add stable https://kubernetes-charts.storage.googleapis.com/
-    helm repo update
+    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add -
+    sudo apt-get install apt-transport-https --yes
+    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+    sudo apt-get update
+    sudo apt-get install helm
 }
 
 ############
