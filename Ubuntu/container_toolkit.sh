@@ -68,7 +68,8 @@ function install_dependencies() {
     ca-certificates \
     curl \
     gnupg-agent \
-    software-properties-common -y
+    software-properties-common \
+    nfs-common -y
 }
 
 
