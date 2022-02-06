@@ -1,3 +1,13 @@
+helm repo add traefik https://helm.traefik.io/traefik
+kubectl create ns traefik-v2
+helm install --namespace=traefik-v2 traefik traefik/traefik
+
+# Use this to access the dashboard. If on a remote host, just ssh port forward to your local machine
+kubectl port-forward $(kubectl -n traefik-v2 get pods --selector "app.kubernetes.io/name=traefik" --output=name) 9000:9000
+# Now visit 127.0.0.1:9000/dashboard/
+
+
+
 Create unsigned certs:
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout tls.key -out tls.crt -subj "/CN=traefik-ui.minikube"
 Creat base64 and add them to the traefik-deployment.yaml:
