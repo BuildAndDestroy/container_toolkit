@@ -3,6 +3,7 @@ kubectl create ns traefik-v2
 helm install --namespace=traefik-v2 traefik traefik/traefik
 
 # Use this to access the dashboard. If on a remote host, just ssh port forward to your local machine
+ssh -i ~/.ssh/id_rsa -L 9000:127.0.0.1:9000 user@master-ip -N
 kubectl port-forward $(kubectl -n traefik-v2 get pods --selector "app.kubernetes.io/name=traefik" --output=name) 9000:9000
 # Now visit 127.0.0.1:9000/dashboard/
 
