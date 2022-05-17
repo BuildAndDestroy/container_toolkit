@@ -154,6 +154,8 @@ function update_bridge() {
 function api_server_master_calico() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
+    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
+    systemctl restart containerd
     kubeadm init #--pod-network-cidr=192.168.0.0/16
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
