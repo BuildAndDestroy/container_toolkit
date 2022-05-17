@@ -151,11 +151,15 @@ function update_bridge() {
     sysctl -p
 }
 
+function restart_containerd() {
+    # Bug workaround for v1.24.0
+    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
+    systemctl restart containerd
+}
+
 function api_server_master_calico() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
-    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
-    systemctl restart containerd
     kubeadm init #--pod-network-cidr=192.168.0.0/16
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -316,6 +320,7 @@ case "$1" in
         install_kubernetes
         update_bridge
         set_cgroup_driver
+	restart_containerd
         api_server_master_calico
         install_calico_network_policy
         install_calicoctl
@@ -333,6 +338,7 @@ case "$1" in
         install_kubernetes
         update_bridge
         set_cgroup_driver
+	restart_containerd
         ;;
     --helm)
         _run_as_root
