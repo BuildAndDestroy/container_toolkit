@@ -2,7 +2,7 @@ Automate the install of Kubernetes and Docker.
 Calico networking is here to stay.
 
 
-# Help Menu - Centos 7 and Ubuntu 20.04
+# Help Menu Ubuntu 20.04
 
 
 ```
@@ -42,7 +42,7 @@ Calico networking is here to stay.
 
 # Deploy Kubernetes Master With The Calico Network:
 
-* Run on a CentOS 7 hosts or VM that you want dedicated as Master
+* Run on a Ubuntu 20.04 hosts or VM that you want dedicated as Master
 
 ```./container_toolkit.sh --master-calico```
 
@@ -66,7 +66,7 @@ kube-system   kube-scheduler-container-host             1/1     Running   0     
 
 # Deploy Kubernetes Workers:
 
-* Run on a CentOS 7 hosts or VM that you want dedicated as a Worker
+* Run on a Ubunutu 20.04 hosts or VM that you want dedicated as a Worker
 
 ```./container_toolkit.sh --worker-node```
 
@@ -87,7 +87,6 @@ k8-node3         Ready    <none>   2m55s   v1.16.2
 ```
 docker build -t container_toolkit .
 docker run --rm -it container_toolkit /opt/container_toolkit/Ubuntu/container_toolkit.sh -h
-docker run --rm -it container_toolkit /opt/container_toolkit/Centos/container_toolkit.sh -h
 ```
 
 

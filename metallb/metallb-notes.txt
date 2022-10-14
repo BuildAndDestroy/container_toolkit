@@ -1,6 +1,4 @@
 https://metallb.universe.tf/installation/
 Create the deployment
-	kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/namespace.yaml
-	kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/metallb.yaml
-Create a configmap - add your ip's that metallb can use to hand out
-    kubectl create -f nginx-metallb.yaml
+        kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.6/config/manifests/metallb-native.yaml
+	kubectl apply -f layer2-conf.yaml
