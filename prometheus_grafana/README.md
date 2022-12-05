@@ -59,8 +59,16 @@ spec:
   #  certResolver: traefik
 
 
+View the README for most recent way to install:
+https://github.com/prometheus-operator/kube-prometheus
 
-kubectl create -f manifests/setup
-kubectl create -f manifests/
+TL;DR:
+kubectl apply --server-side -f manifests/setup
+kubectl wait \
+	--for condition=Established \
+	--all CustomResourceDefinition \
+	--namespace=monitoring
+kubectl apply -f manifests/
 
-Watch your pods, update your /etc/hosts with your loadbalancer IP and grafana.example.com. You will be able to access and create your admin account.
+TODO:
+Figure out the Traefik middleware. Currently the above yaml does not work for this service.

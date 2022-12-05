@@ -21,6 +21,10 @@ These can be used for self signed certs. Let use letsencrypt for CA signed certs
 
 Just add ingress and ingressroutes to your deployment files
 
+
+TODO:
+Update with middleware, the below does not work with newer versions of Traefik and Let's Encrypt
+
 ---
 apiVersion: v1
 kind: Service

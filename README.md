@@ -82,6 +82,13 @@ k8-node2         Ready    <none>   2m55s   v1.16.2
 k8-node3         Ready    <none>   2m55s   v1.16.2
 ```
 
+# Side note
+We have found Ubuntu 20.04 doesn't always disable swap after a reboot. You most likely will need to ssh into the nodes and disable swap, then restart kubernetes to get the services working:
+```
+sudo /sbin/swapoff -av
+sudo systemctl restart kubelet.service
+```
+
 
 ## Install Dockerfile
 ```
