@@ -24,17 +24,6 @@ Calico networking is here to stay.
 [*] --helm       Apply this option to install helm.
                  ./container_toolkit.sh --helm
 
-[*] --PSO-init   After Kubernetes is up, run this first to install Pure Storage PSO.
-                 ./container_toolkit.sh --PSO-init
-
-    >>> --PSO-kube OR --PSO-helm, not both.
-
-[*] --PSO-kube   After PSO-init ws ran, run this to install PSO into kubectl.
-                 ./container_toolkit.sh --PSO-kube
-
-[*] --PSO-helm   After PSO-init ws ran run this to install PSO into helm.
-                 ./container_toolkit.sh --PSO-helm
-
 [*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.
                  ./container_toolkit.sh --clean
 ```
