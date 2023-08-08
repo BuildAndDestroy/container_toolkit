@@ -35,17 +35,6 @@ function _help_menu() {
     echo '[*] --helm       Apply this option to install helm.'
     echo '                 bash container_toolkit.sh --helm'
     echo ''
-    echo '[*] --PSO-init   After Kubernetes is up, run this first to install Pure Storage PSO.'
-    echo '                 bash container_toolkit.sh --PSO-init'
-    echo ''
-    echo '    >>> --PSO-kube OR --PSO-helm, not both.'
-    echo ''
-    echo '[*] --PSO-kube   After PSO-init ws ran, run this to install PSO into kubectl.'
-    echo '                 bash container_toolkit.sh --PSO-kube'
-    echo ''
-    echo '[*] --PSO-helm   After PSO-init ws ran run this to install PSO into helm.'
-    echo '                 bash container_toolkit.sh --PSO-helm'
-    echo ''
     echo '[*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.'
     echo '                 bash container_toolkit.sh --clean'
     echo ''
@@ -177,90 +166,12 @@ function cleanup_workers() {
     done
 }
 
-function tiller_permissions_yaml() {
-    # Install tiller permissions for kubernetes RBAC.
-    cat <<EOF > helm-rbac.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: tiller
-  namespace: kube-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: tiller
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-  - kind: ServiceAccount
-    name: tiller
-    namespace: kube-system
-EOF
-    kubectl apply -f helm-rbac.yaml
-}
-
-function install_helm() {
-    # Install helm once.
-    echo "[*] Installing helm."
-    curl -L https://git.io/get_helm.sh > install-helm.sh
-    chmod 755 install-helm.sh
-    ./install-helm.sh
-}
-
-function install_helm_chart() {
-    echo '[*] Updating firewall and installing helm dashboard.'
-    echo '[*] Add nodes to your cluster, this will allow Tiller to deploy.'
-    echo '[*] Once the tiller container deploys, run both commands:'
-    echo '        helm install stable/kubernetes-dashboard --name dashboard-demo'
-    echo '        helm upgrade dashboard-demo stable/kubernetes-dashboard --set fullnameOverride="dashboard"'
-}
-
 function install_helm_three(){
-    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add -
-    sudo apt-get install apt-transport-https --yes
-    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+    curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+    sudo apt-get install apt-transport-https -y
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
     sudo apt-get update -y
     sudo apt-get install helm -y
-}
-
-function install_pure_storage_pso() { #  Install the Pure Storage Orchestrator for Kubernetes.
-    helm repo add pure http://purestorage.github.io/helm-charts
-    helm repo update
-    helm search repo pure-csi
-}
-
-function clone_helm_chart() { #  Create the values.yaml file, then tell end user to update.
-    yum install git rsync -y
-    git clone https://github.com/purestorage/helm-charts.git
-    echo "[*] Change directory to helm-charts/operator-csi-plugin and update the values.yaml file with:"
-    echo "        Your FlashArray and FlashBlade API credentials and IPv4s"
-    echo "        fexPath: /usr/libexec/kubernetes/kubelet-plugins/volume/exec"
-    echo "        sanType: ISCSI or FC"
-    echo "        pureBackend: block or file"
-    echo "        Delete anything not being used."
-    echo ""
-    mv container_toolkit.sh helm-charts/operator-csi-plugin
-    echo "Then run container_toolkit.sh --PSO-kube OR --PSO-helm, not both."
-}
-
-function install_pso_plugin_kube() { #  Install the plugin using values.yaml
-    if [ $(pwd | sed 's#/#\ #g' | awk '{print $NF}') != "operator-csi-plugin" ]; then 
-        echo "Please change working directory to /path/to/helm-charts/operator-csi-plugin"
-        exit
-    fi
-    ./install.sh --namespace=pure-csi-operator --orchestrator=k8s -f values.yaml
-    echo "Kubernetes install done."
-}
-
-function install_pso_plugin_helm() {
-    if [ $(pwd | sed 's#/#\ #g' | awk '{print $NF}') != "operator-csi-plugin" ]; then 
-        echo "Please change working directory to /path/to/helm-charts/operator-csi-plugin"
-        exit
-    fi
-    helm install --name pure-storage-driver pure/pure-csi --namespace pso-operator -f values.yaml
 }
 
 ################################
@@ -320,19 +231,6 @@ case "$1" in
     --helm)
         _run_as_root
         install_helm_three
-        ;;
-    --PSO-init)
-        _run_as_root
-        install_pure_storage_pso
-        clone_helm_chart
-        ;;
-    --PSO-kube)
-        _run_as_root
-        install_pso_plugin_kube
-        ;;
-    --PSO-helm)
-        _run_as_root
-        install_pso_plugin_helm
         ;;
     --rancher)
         echo 'Needs Testing'
