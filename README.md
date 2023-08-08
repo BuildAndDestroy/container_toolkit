@@ -2,7 +2,7 @@ Automate the install of Kubernetes and Docker.
 Calico networking is here to stay.
 
 
-# Help Menu Ubuntu 20.04
+# Help Menu Ubuntu 22.04
 
 
 ```
@@ -42,7 +42,7 @@ Calico networking is here to stay.
 
 # Deploy Kubernetes Master With The Calico Network:
 
-* Run on a Ubuntu 20.04 hosts or VM that you want dedicated as Master
+* Run on a Ubuntu 22.04 hosts or VM that you want dedicated as Master
 
 ```./container_toolkit.sh --master-calico```
 
@@ -66,7 +66,7 @@ kube-system   kube-scheduler-container-host             1/1     Running   0     
 
 # Deploy Kubernetes Workers:
 
-* Run on a Ubunutu 20.04 hosts or VM that you want dedicated as a Worker
+* Run on a Ubunutu 22.04 hosts or VM that you want dedicated as a Worker
 
 ```./container_toolkit.sh --worker-node```
 
@@ -83,7 +83,7 @@ k8-node3         Ready    <none>   2m55s   v1.16.2
 ```
 
 # Side note
-We have found Ubuntu 20.04 doesn't always disable swap after a reboot. You most likely will need to ssh into the nodes and disable swap, then restart kubernetes to get the services working:
+We have found Ubuntu 22.04 doesn't always disable swap after a reboot. You most likely will need to ssh into the nodes and disable swap, then restart kubernetes to get the services working:
 ```
 sudo /sbin/swapoff -av
 sudo systemctl restart kubelet.service
