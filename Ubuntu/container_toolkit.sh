@@ -89,9 +89,6 @@ EOF
 }
 
 function update_bridge() {
-    #echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
-    #echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
-    #sysctl -p
     sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
 net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
@@ -99,16 +96,6 @@ net.ipv4.ip_forward = 1
 EOF
     sudo sysctl --system
 }
-
-#function install_containerd_runtime_dependencies() {
-#    sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates
-#}
-
-#function restart_containerd() {
-#    # Bug workaround for v1.24.0
-#    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
-#    systemctl restart containerd
-#}
 
 function enable_docker_repo(){
     sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg
@@ -162,7 +149,10 @@ function install_calico_network_policy() {
 
 function install_calicoctl() {
     echo '[*] Installing calicoctl as a pod'
-    kubectl apply -f https://docs.projectcalico.org/manifests/calicoctl.yaml
+    # etcd:
+    #kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calicoctl-etcd.yaml
+    # K8s API datastore:
+    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calicoctl.yaml
     kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
 }
 
@@ -311,7 +301,6 @@ case "$1" in
 	install_calico_network_policy
 	install_calicoctl
 	set_felix_loose_true
-
         ;;
     --worker-node)
         _run_as_root
@@ -327,7 +316,6 @@ case "$1" in
 	restart_enable_containerd
 	add_kubernetes_repo
 	install_kube_commands
-
         ;;
     --helm)
         _run_as_root
