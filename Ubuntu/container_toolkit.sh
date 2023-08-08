@@ -52,7 +52,12 @@ function install_dependencies() {
     # Setup packages for docker.
     echo '[*] Installing packages to support Docker.'
     sudo apt update -y
-    sudo apt install apt-transport-https ca-certificates curl gnupg2 software-properties-common nfs-common -y
+    sudo apt install apt-transport-https ca-certificates curl gnupg gnupg2 software-properties-common nfs-common -y
+}
+
+function docker_install_script(){
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh ./get-docker.sh --dry-run
 }
 
 function set_hostname() {
@@ -152,7 +157,7 @@ function set_felix_loose_true() {
 
 function install_rancher() {
     # Install Rancher on master kubernetes host.
-    docker run -d --restart=unless-stopped -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher
+    sudo docker run --privileged -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher
 }
 
 function cleanup_workers() {
@@ -190,9 +195,7 @@ case "$1" in
         _run_as_root
         cleanup_docker
         install_dependencies
-        #install_docker
-        start_enable_docker
-        test_docker
+	docker_install_script
         ;;
     --master-calico)
         _run_as_root
@@ -233,16 +236,11 @@ case "$1" in
         install_helm_three
         ;;
     --rancher)
-        echo 'Needs Testing'
-        exit
         _run_as_root
         cleanup_docker
         install_dependencies
-        #install_docker
-        start_enable_docker
-        test_docker
         set_hostname
-        configure_master_firewall
+	docker_install_script
         install_rancher
         ;;
     --clean)
