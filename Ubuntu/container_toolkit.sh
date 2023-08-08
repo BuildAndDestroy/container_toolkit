@@ -56,51 +56,18 @@ function _help_menu() {
 function cleanup_docker() {
     # Cleanup any currently installed docker package.
     echo '[*] Removing old Docker packages.'
-    apt remove docker docker-engine docker.io containerd runc -y
+    sudo apt remove docker docker-engine docker.io containerd runc -y
 }
 
 function install_dependencies() {
     # Setup packages for docker.
     echo '[*] Installing packages to support Docker.'
-    apt update -y
-    apt install \
-    apt-transport-https \
-    ca-certificates \
-    curl \
-    gnupg-agent \
-    software-properties-common \
-    nfs-common -y
-}
-
-
-function install_docker() {
-    # Install docker. Retry until the key imports.
-    echo '[*] Installing Docker.'
-    while [ "$(/usr/bin/which docker)" == "" ]; do
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-        sleep 5
-        apt-key fingerprint 0EBFCD88
-        add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-        apt update -y
-        apt install docker-ce docker-ce-cli containerd.io -y
-    done
-}
-
-function start_enable_docker() {
-    # Start and enable docker in systemd.
-    echo '[*] Starting and enabling Docker.'
-    systemctl start docker
-    systemctl enable docker
-}
-
-function test_docker() {
-    # Verify docker is running
-    echo '[*] Testing Docker.'
-    docker run hello-world
+    sudo apt update -y
+    sudo apt install apt-transport-https ca-certificates curl gnupg2 software-properties-common nfs-common -y
 }
 
 function set_hostname() {
-    echo "$(ifconfig | grep ens -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
+    echo "$(ip a | grep enp -A1 | grep inet | awk '{print $2}' | sed 's/\/24//g')" "$(hostnamectl --static)" >> /etc/hosts
 }
 
 function disable_swap() {
@@ -112,55 +79,73 @@ function disable_swap() {
     cat /etc/fstab | grep swap
 }
 
-function install_kubernetes() {
-    # Set kubernetes repo and install kubernetes
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add
-    apt-add-repository "deb http://apt.kubernetes.io/ kubernetes-xenial main"
-    apt install -y kubeadm kubelet kubectl kubernetes-cni
-    systemctl start docker && systemctl enable docker
-    systemctl start kubelet && systemctl enable kubelet
-}
-
-function set_cgroup_driver() {
-    # Update cgroup driver for kubernetes
-    echo '[*] Verify Docker cgroupfs'
-    docker info | grep -i cgroup
-    echo '[*] Updating Docker to use same cgroup.'
-cat > /etc/docker/daemon.json <<EOF
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m"
-  },
-  "storage-driver": "overlay2",
-  "storage-opts": [
-    "overlay2.override_kernel_check=true"
-  ]
-}
+function load_kernel_modules() {
+    sudo tee /etc/modules-load.d/containerd.conf <<EOF
+overlay
+br_netfilter
 EOF
-    mkdir -p /etc/systemd/system/docker.service.d
-    systemctl daemon-reload
-    systemctl restart docker
-    systemctl restart kubelet
+    sudo modprobe overlay
+    sudo modprobe br_netfilter
 }
 
 function update_bridge() {
-    echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
-    echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
-    sysctl -p
+    #echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
+    #echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
+    #sysctl -p
+    sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+    sudo sysctl --system
 }
 
-function restart_containerd() {
-    # Bug workaround for v1.24.0
-    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
-    systemctl restart containerd
+#function install_containerd_runtime_dependencies() {
+#    sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates
+#}
+
+#function restart_containerd() {
+#    # Bug workaround for v1.24.0
+#    mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
+#    systemctl restart containerd
+#}
+
+function enable_docker_repo(){
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg
+    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+}
+
+function install_containerd(){
+    sudo apt update -y
+    sudo apt install -y containerd.io
+}
+
+function containerd_use_systemd(){
+    containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
+    sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+}
+
+function restart_enable_containerd(){
+    sudo systemctl restart containerd
+    sudo systemctl enable containerd
+}
+
+function add_kubernetes_repo(){
+    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/kubernetes-xenial.gpg
+    sudo apt-add-repository "deb http://apt.kubernetes.io/ kubernetes-xenial main"
+}
+
+function install_kube_commands(){
+    sudo apt update -y
+    sudo apt install -y kubelet kubeadm kubectl
+    sudo apt-mark hold kubelet kubeadm kubectl
 }
 
 function api_server_master_calico() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
-    kubeadm init #--pod-network-cidr=192.168.0.0/16
+    #kubeadm init --pod-network-cidr=192.168.0.0/16
+    kubeadm init --pod-network-cidr=10.96.0.0/16
     mkdir -p $HOME/.kube
     sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
     sudo chown $(id -u):$(id -g) $HOME/.kube/config
@@ -168,7 +153,7 @@ function api_server_master_calico() {
 
 function install_calico_network_policy() {
     # Install the calico pod network.
-    curl https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/calico.yaml -O
+    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml -O
     sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
     kubectl apply -f calico.yaml
     echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
@@ -247,8 +232,8 @@ function install_helm_three(){
     curl https://baltocdn.com/helm/signing.asc | sudo apt-key add -
     sudo apt-get install apt-transport-https --yes
     echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
-    sudo apt-get update
-    sudo apt-get install helm
+    sudo apt-get update -y
+    sudo apt-get install helm -y
 }
 
 function install_pure_storage_pso() { #  Install the Pure Storage Orchestrator for Kubernetes.
@@ -304,7 +289,7 @@ case "$1" in
         _run_as_root
         cleanup_docker
         install_dependencies
-        install_docker
+        #install_docker
         start_enable_docker
         test_docker
         ;;
@@ -312,33 +297,37 @@ case "$1" in
         _run_as_root
         cleanup_docker
         install_dependencies
-        install_docker
-        start_enable_docker
-        test_docker
-        set_hostname
-        disable_swap
-        install_kubernetes
-        update_bridge
-        set_cgroup_driver
-	restart_containerd
-        api_server_master_calico
-        install_calico_network_policy
-        install_calicoctl
-        set_felix_loose_true
+	set_hostname
+	disable_swap
+	load_kernel_modules
+	update_bridge
+	enable_docker_repo
+	install_containerd
+	containerd_use_systemd
+	restart_enable_containerd
+	add_kubernetes_repo
+	install_kube_commands
+	api_server_master_calico
+	install_calico_network_policy
+	install_calicoctl
+	set_felix_loose_true
+
         ;;
     --worker-node)
         _run_as_root
         cleanup_docker
         install_dependencies
-        install_docker
-        start_enable_docker
-        test_docker
-        set_hostname
-        disable_swap
-        install_kubernetes
-        update_bridge
-        set_cgroup_driver
-	restart_containerd
+	set_hostname
+	disable_swap
+	load_kernel_modules
+	update_bridge
+	enable_docker_repo
+	install_containerd
+	containerd_use_systemd
+	restart_enable_containerd
+	add_kubernetes_repo
+	install_kube_commands
+
         ;;
     --helm)
         _run_as_root
@@ -363,7 +352,7 @@ case "$1" in
         _run_as_root
         cleanup_docker
         install_dependencies
-        install_docker
+        #install_docker
         start_enable_docker
         test_docker
         set_hostname
