@@ -92,8 +92,16 @@ EOF
 }
 
 function enable_docker_repo(){
-    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/docker.gpg
-    sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/keyrings/docker.gpg
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt-get update -y
+}
+
+function install_docker_packages(){
+    sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+    sudo docker run hello-world
 }
 
 function install_containerd(){
@@ -122,6 +130,15 @@ function install_kube_commands(){
     sudo apt-mark hold kubelet kubeadm kubectl
 }
 
+function restart_kubelet_services(){
+    sudo systemctl restart kubelet.service
+    sudo systemctl enable kubelet.service
+}
+
+function init_kubernetes_images(){
+    sudo kubeadm config images pull
+}
+
 function api_server_master_calico() {
     # Beginning of Master node setup.
     echo '[*] Starting Master node.'
@@ -134,19 +151,24 @@ function api_server_master_calico() {
 
 function install_calico_network_policy() {
     # Install the calico pod network.
-    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml -O
-    sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
-    kubectl apply -f calico.yaml
-    echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
-    kubectl get pods --all-namespaces
+    #curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml -O
+    #sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
+    #kubectl apply -f calico.yaml
+    #echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
+    #kubectl get pods --all-namespaces
+    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/tigera-operator.yaml -O
+    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/custom-resources.yaml -O
+    kubectl create -f tigera-operator.yaml
+    sed -i 's/cidr: 192\.168\.0\.0\/16/cidr: 10.96.0.0\/16/g' custom-resources.yaml
+    kubectl create -f custom-resources.yaml
 }
 
 function install_calicoctl() {
     echo '[*] Installing calicoctl as a pod'
     # etcd:
-    #kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calicoctl-etcd.yaml
+    #kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/calicoctl-etcd.yaml
     # K8s API datastore:
-    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calicoctl.yaml
+    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/calicoctl.yaml
     kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
 }
 
@@ -206,11 +228,14 @@ case "$1" in
 	load_kernel_modules
 	update_bridge
 	enable_docker_repo
+	install_docker_packages
 	install_containerd
 	containerd_use_systemd
 	restart_enable_containerd
 	add_kubernetes_repo
 	install_kube_commands
+	restart_kubelet_services
+	init_kubernetes_images
 	api_server_master_calico
 	install_calico_network_policy
 	install_calicoctl
@@ -225,6 +250,7 @@ case "$1" in
 	load_kernel_modules
 	update_bridge
 	enable_docker_repo
+	install_docker_packages
 	install_containerd
 	containerd_use_systemd
 	restart_enable_containerd
