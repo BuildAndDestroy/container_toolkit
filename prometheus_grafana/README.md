@@ -39,7 +39,7 @@ metadata:
     traefik.ingress.kubernetes.io/redirect-entry-point: https
 spec:
   rules:
-  - host: grafana.outssystems.com
+  - host: grafana.example.com
     http:
       paths:
       - path: /
