@@ -2,6 +2,7 @@ After Traefik is up and running, clone and install prometheus with grafana. Make
 
 git clone https://github.com/prometheus-operator/kube-prometheus.git
 
+
 New service file kube-prometheus/manifests/grafana-service.yaml
 
 apiVersion: v1
@@ -32,8 +33,8 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: "traefik"
     acme.cert-manager.io/http01-edit-in-place: "true"
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    #cert-manager.io/cluster-issuer: letsencrypt-staging
+    #cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt-staging
     traefik.ingress.kubernetes.io/frontend-entry-points: http, https
     traefik.ingress.kubernetes.io/redirect-entry-point: https
 spec:
@@ -50,8 +51,8 @@ spec:
               number: 3000
   tls:
   - hosts:
-    - grafana.outssystems.com
-    secretName: grafana-outssystems-com-tls
+    - grafana.example.com
+    secretName: grafana-example-com-tls
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute
@@ -69,7 +70,6 @@ spec:
           port: 3000
   tls:
     certResolver: traefik
-
 
 
 View the README for most recent way to install:
