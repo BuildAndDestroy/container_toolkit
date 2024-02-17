@@ -3,6 +3,7 @@ After Traefik is up and running, clone and install prometheus with grafana. Make
 git clone https://github.com/prometheus-operator/kube-prometheus.git
 
 New service file kube-prometheus/manifests/grafana-service.yaml
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -10,7 +11,7 @@ metadata:
     app.kubernetes.io/component: grafana
     app.kubernetes.io/name: grafana
     app.kubernetes.io/part-of: kube-prometheus
-    app.kubernetes.io/version: 8.3.4
+    app.kubernetes.io/version: 10.2.0
   name: grafana
   namespace: monitoring
 spec:
@@ -28,9 +29,16 @@ kind: Ingress
 metadata:
   name: grafana-ingress
   namespace: monitoring
+  annotations:
+    kubernetes.io/ingress.class: "traefik"
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    #cert-manager.io/cluster-issuer: letsencrypt-staging
+    traefik.ingress.kubernetes.io/frontend-entry-points: http, https
+    traefik.ingress.kubernetes.io/redirect-entry-point: https
 spec:
   rules:
-  - host: grafana.example.com
+  - host: grafana.outssystems.com
     http:
       paths:
       - path: /
@@ -40,6 +48,10 @@ spec:
             name: grafana
             port:
               number: 3000
+  tls:
+  - hosts:
+    - grafana.outssystems.com
+    secretName: grafana-outssystems-com-tls
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute
@@ -48,15 +60,16 @@ metadata:
   namespace: monitoring
 spec:
   entryPoints:
-    - web
+    - websecure
   routes:
     - match: Host(`grafana.example.com`)
       kind: Rule
       services:
         - name: grafana
-          port: 80
-  #tls:
-  #  certResolver: traefik
+          port: 3000
+  tls:
+    certResolver: traefik
+
 
 
 View the README for most recent way to install:
@@ -70,5 +83,3 @@ kubectl wait \
 	--namespace=monitoring
 kubectl apply -f manifests/
 
-TODO:
-Figure out the Traefik middleware. Currently the above yaml does not work for this service.
