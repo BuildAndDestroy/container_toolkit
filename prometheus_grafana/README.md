@@ -4,8 +4,6 @@ git clone https://github.com/prometheus-operator/kube-prometheus.git
 
 
 New service file kube-prometheus/manifests/grafana-service.yaml
-Make sure to use the latest "Service" from the grafana-service.yaml file.
-Adding this snippet below to make sure you have the correct file.
 
 apiVersion: v1
 kind: Service
@@ -74,9 +72,6 @@ spec:
     certResolver: traefik
 
 
-
-
-
 View the README for most recent way to install:
 https://github.com/prometheus-operator/kube-prometheus
 
@@ -88,5 +83,3 @@ kubectl wait \
 	--namespace=monitoring
 kubectl apply -f manifests/
 
-TODO:
-Figure out the Traefik middleware. Currently the above yaml does not work for this service.
