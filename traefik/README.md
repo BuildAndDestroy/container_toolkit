@@ -23,7 +23,9 @@ Just add ingress and ingressroutes to your deployment files
 
 
 TODO:
-Update with middleware, the below does not work with newer versions of Traefik and Let's Encrypt
+* Update with middleware, the below does not work with newer versions of Traefik and Let's Encrypt
+* Found that the apiVersion needs to be updated (under IngressRoute):
+
 
 ---
 apiVersion: v1
@@ -67,7 +69,8 @@ spec:
     - registry.example.com
     secretName: docker-registry-tls
 ---
-apiVersion: traefik.containo.us/v1alpha1
+#apiVersion: traefik.containo.us/v1alpha1
+apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: registry-example-ingressroute
