@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: docker-registry-ns
+---
+apiVersion: v1
+data:
+  htpasswd: {{ Get this from README.md }}
+kind: Secret
+metadata:
+  name: docker-registry-htpasswd
+  namespace: docker-registry-ns
+type: Opaque
+---
+# Create PersistentVolume
+# change the ip of NFS server
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: docker-registry-storage-pv
+  namespace: docker-registry-ns
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+          path: /mnt/kubernetes/docker-registry/registry
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: docker-registry-storage-pvc
+  namespace: docker-registry-ns
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker-registry
+  namespace: docker-registry-ns
+  labels:
+    app: docker-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docker-registry
+  template:
+    metadata:
+      labels:
+        app: docker-registry
+    spec:
+      containers:
+      - name: docker-registry
+        image: registry
+        ports:
+        - containerPort: 5000
+        volumeMounts:
+        - name: docker-registry-storage-pv
+          mountPath: /var/lib/registry
+        - name: htpasswd
+          mountPath: /mnt/kubernetes/docker-registry/auth
+          readOnly: true
+        env:
+        - name: REGISTRY_AUTH
+          value: htpasswd
+        - name: REGISTRY_AUTH_HTPASSWD_REALM
+          value: Docker Registry
+        - name: REGISTRY_AUTH_HTPASSWD_PATH
+          value: /mnt/kubernetes/docker-registry/auth/htpasswd
+        - name: REGISTRY_STORAGE_DELETE_ENABLED
+          value: "true"
+      volumes:
+      - name: docker-registry-storage-pv
+        persistentVolumeClaim:
+            claimName: docker-registry-storage-pvc
+      - name: htpasswd
+        secret:
+          secretName: docker-registry-htpasswd
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-registry-service
+  namespace: docker-registry-ns
+spec:
+  selector:
+    app: docker-registry
+  ports:
+    - protocol: TCP
+      port: 5000
+---
+#apiVersion: extensions/v1beta1
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: docker-registry-ingress
+  namespace: docker-registry-ns
+  annotations:
+    #kubernetes.io/ingress.class: "traefik"
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    #cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    traefik.ingress.kubernetes.io/frontend-entry-points: http, https
+    traefik.ingress.kubernetes.io/redirect-entry-point: https
+spec:
+  ingressClassName: "traefik"
+  rules:
+  - host: registry.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: docker-registry-service
+            port:
+              number: 5000
+  tls:
+  - hosts:
+    - registry.yourdomain.com
+    secretName: docker-registry-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: registry-ingressroute
+  namespace: docker-registry-ns
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`registry.yourdomain.com`)
+      kind: Rule
+      services:
+        - name: docker-registry-service
+          port: 5000
+  tls:
+    certResolver: letsencrypt
