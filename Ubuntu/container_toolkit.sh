@@ -120,8 +120,10 @@ function restart_enable_containerd(){
 }
 
 function add_kubernetes_repo(){
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmour -o /etc/apt/trusted.gpg.d/kubernetes-xenial.gpg
-    sudo apt-add-repository "deb http://apt.kubernetes.io/ kubernetes-xenial main"
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+    sudo chmod 644 /etc/apt/sources.list.d/kubernetes.list
 }
 
 function install_kube_commands(){

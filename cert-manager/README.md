@@ -1,12 +1,13 @@
-Install Traefik first, then move forward with cert-manager
+Install Metallb, then Traefik first, then move forward with cert-manager
 
-helm repo add jetstack https://charts.jetstack.io
+helm repo add jetstack https://charts.jetstack.io --force-update
 
-helm install cert-manager jetstack/cert-manager \
---namespace cert-manager \
---create-namespace \
---version v1.13.2 \
---set installCRDs=true
+helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.16.2 \
+  --set crds.enabled=true
 
 Now define cluster issuers for certs:
 
