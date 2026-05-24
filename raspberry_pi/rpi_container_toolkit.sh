@@ -199,30 +199,78 @@ function resolve_worker_credentials() {
     fi
 }
 
+function write_calico_custom_resources() {
+    local dest="$1"
+    tee "${dest}" >/dev/null <<EOF
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    containerIPForwarding: Enabled
+    ipPools:
+      - blockSize: 26
+        cidr: ${CLUSTER_CIDR}
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}
+EOF
+}
+
+function wait_for_tigera_operator_crds() {
+    local i crd
+    echo '[*] Waiting for tigera-operator to install operator.tigera.io CRDs...'
+    kubectl wait --for=condition=Available deployment/tigera-operator -n tigera-operator --timeout=300s
+
+    for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
+        for i in $(seq 1 60); do
+            if kubectl get crd "${crd}" >/dev/null 2>&1 \
+                && kubectl wait --for=condition=Established "crd/${crd}" --timeout=10s >/dev/null 2>&1; then
+                echo "[*] CRD ready: ${crd}"
+                break
+            fi
+            if [[ ${i} -eq 60 ]]; then
+                echo "[*] Error: timed out waiting for CRD ${crd}"
+                exit 1
+            fi
+            sleep 5
+        done
+    done
+}
+
 function install_calico() {
     local workdir
     workdir=$(mktemp -d)
     export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
     echo "[*] Installing Calico ${CALICO_VERSION} for k3s."
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml" \
+        -o "${workdir}/v1_crd_projectcalico_org.yaml"
+    kubectl apply --server-side --force-conflicts -f "${workdir}/v1_crd_projectcalico_org.yaml"
+
     curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
         -o "${workdir}/tigera-operator.yaml"
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
-        -o "${workdir}/custom-resources.yaml"
-
-    if [[ "${CLUSTER_CIDR}" != "192.168.0.0/16" ]]; then
-        sed -i "s|cidr: 192.168.0.0/16|cidr: ${CLUSTER_CIDR}|" "${workdir}/custom-resources.yaml"
-    fi
-
-    # Required for k3s + Calico (see Tigera k3s quickstart).
-    if ! grep -q 'containerIPForwarding' "${workdir}/custom-resources.yaml"; then
-        sed -i '/calicoNetwork:/a\    containerIPForwarding: Enabled' "${workdir}/custom-resources.yaml"
-    fi
-
     kubectl apply -f "${workdir}/tigera-operator.yaml"
+
+    wait_for_tigera_operator_crds
+
+    write_calico_custom_resources "${workdir}/custom-resources.yaml"
     kubectl apply -f "${workdir}/custom-resources.yaml"
 
     echo '[*] Waiting for Calico (up to 10 minutes on Pi hardware).'
+    for i in $(seq 1 60); do
+        if kubectl get tigerastatus calico -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q True; then
+            break
+        fi
+        sleep 10
+    done
     kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n calico-system --timeout=600s 2>/dev/null \
         || kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=600s 2>/dev/null \
         || echo '[*] Warning: calico-node not Ready yet; check: kubectl get pods -A'
