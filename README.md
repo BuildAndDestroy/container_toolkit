@@ -74,7 +74,7 @@ sudo K3S_VERSION=v1.31.5+k3s1 CALICO_VERSION=v3.31.2 bash rpi_container_toolkit.
 |------|-------------|
 | `Ubuntu/container_toolkit.sh` | kubeadm cluster installer |
 | `raspberry_pi/rpi_container_toolkit.sh` | k3s cluster installer |
-| `raspberry_pi/secure_pi.sh` | Optional Pi hardening (SSH, firewall, etc.) |
+| `raspberry_pi/secure_pi.sh` | Pi OS Lite / Ubuntu ARM hardening (SSH, UFW, k3s prep) |
 | `cert-manager/` | ClusterIssuer manifests for TLS |
 | `metallb/` | MetalLB L2 config and sample service |
 | `traefik/` | Traefik notes |
@@ -214,8 +214,16 @@ Use static IPs or DHCP reservations.
 
 1. Flash **64-bit** Raspberry Pi OS Lite; enable SSH.
 2. Set hostnames (`pi-master`, `pi-worker1`, `pi-worker2`).
-3. Optional: `sudo bash secure_pi.sh --raspbian`
-4. First install may require a **reboot** after cgroup boot params are added to `cmdline.txt`; re-run the script after reboot.
+3. Harden each Pi (before k3s):
+
+```bash
+cd raspberry_pi
+sudo bash secure_pi.sh --pi-os
+# Uses your Imager login user, SSH keys only, UFW with k3s ports, cgroup boot params
+# Reboot when prompted, then continue with k3s install
+```
+
+Legacy flag `--raspbian` is an alias for `--pi-os`. Optional: `CREATE_NODE_USER=true` to also create a `node` user.
 
 ### 2. Control plane (`pi-master`)
 

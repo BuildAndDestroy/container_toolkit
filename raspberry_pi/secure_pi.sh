@@ -1,267 +1,419 @@
 #!/bin/bash
+#
+# Harden Raspberry Pi OS Lite (64-bit) or Ubuntu Server for ARM before k3s.
+# Run once per node as root, BEFORE rpi_container_toolkit.sh.
+#
 
-###########################
-#        Secure Pi        #
-# Secure the Raspberry Pi #
-###########################
+set -o pipefail
 
-function run_as_root() { #  Best to run as root
-    if [[ $(/usr/bin/id -u) != 0 ]]; then
-        /bin/echo '[*] Must be ran as root.'
-        exit
+ADMIN_USER="${ADMIN_USER:-}"
+CREATE_NODE_USER="${CREATE_NODE_USER:-false}"
+SKIP_REBOOT="${SKIP_REBOOT:-false}"
+
+function run_as_root() {
+    if [[ $(id -u) != 0 ]]; then
+        echo '[*] Must be run as root: sudo bash secure_pi.sh --pi-os'
+        exit 1
     fi
 }
 
 function _help_menu() {
-    # Help menu
-    echo '[*] Help Menu:'
+    echo '[*] Help Menu — secure_pi.sh'
     echo ''
-    echo '[*] --ubuntu     If running Ubuntu 21.10 ARM, run this to secure Ubuntu.'
-    echo '                      bash secure_pi.sh --ubuntu'
+    echo '[*] --pi-os        Raspberry Pi OS Lite 64-bit (recommended).'
+    echo '                 sudo bash secure_pi.sh --pi-os'
     echo ''
-    echo '[*] --raspbian   If running Raspbian, run this to secure Raspbian.'
-    echo '                      bash secure_pi.sh --raspbian'
+    echo '[*] --raspbian     Alias for --pi-os (legacy flag name).'
     echo ''
-    exit
+    echo '[*] --ubuntu       Ubuntu Server for Raspberry Pi (ARM64).'
+    echo '                 sudo bash secure_pi.sh --ubuntu'
+    echo ''
+    echo 'Options (environment):'
+    echo '  ADMIN_USER=<name>       Admin account to harden (default: your Imager user).'
+    echo '  CREATE_NODE_USER=true   Also create a "node" user with SSH keys.'
+    echo '  SKIP_REBOOT=true        Do not reboot at the end.'
+    echo ''
+    echo 'If you added an SSH public key in Raspberry Pi Imager, it is detected'
+    echo 'automatically and you will not be prompted again.'
+    echo ''
+    echo 'Run on each Pi before: sudo bash rpi_container_toolkit.sh --master-k3s'
+    exit 0
 }
 
-function set_keyboard_english() { #  Update keyboard to English US
-    /bin/echo -e '[*] Setting Keyboard to English (US)'
-    /bin/sed -i 's/gb/us/g' /etc/default/keyboard
-}
-
-function create_pi_password() { #  Create a new pi user password
-    /bin/echo '[*] Type in user "pi" password.'
-    read -sp "Password: " password_pi_variable
-}
-
-function set_pi_password() { #  Set the new password for the pi user.
-    /bin/echo -e '[*] Changing user "pi" password'
-    /bin/echo -e "$password_pi_variable\n$password_pi_variable\n" | /usr/bin/sudo /usr/bin/passwd pi
-}
-
-function create_node_password() { #  Ask for the new user password for node
-    /bin/echo '[*] Type in user "node" password.'
-    read -sp "Password: " password_node_variable
-}
-
-function create_node_user() { #  Set the new password for node
-    /bin/echo -e '[*] Creating user node'
-    /usr/bin/sudo /usr/sbin/useradd node -m -s /bin/bash -U
-    /bin/echo -e "$password_node_variable\n$password_node_variable\n" | /usr/bin/passwd node
-}
-
-function raspbian_node_user_groups() { #  Add the correct groups for the node user.
-    /usr/bin/sudo usermod -a -G adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi node
-}
-
-function ubuntu_node_user_groups() { #  Add the correct groups for the node user.
-    /usr/bin/sudo usermod -a -G ubuntu,adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,lxd,netdev node
-}
-
-function config_node_ssh_keys() { #  Create Admin User Secure File Structure SSH
-    if [ ! -d /home/node/.ssh ]; then
-        /bin/mkdir /home/node/.ssh
-        /usr/bin/touch /home/node/.ssh/authorized_keys
+function detect_admin_user() {
+    if [[ -n "${ADMIN_USER}" ]]; then
+        if ! id "${ADMIN_USER}" &>/dev/null; then
+            echo "[*] Error: ADMIN_USER=${ADMIN_USER} does not exist."
+            exit 1
+        fi
+        return
     fi
 
-    if [ ! -f /home/node/.ssh/authorized_keys ]; then
-        /usr/bin/touch /home/node/.ssh/authorized_keys
-    fi
-    /bin/echo "Please copy/paste your authorized key for 'node' user:"
-    read -r -p ">>> " keyValue
-    /bin/echo "$keyValue" >> /home/node/.ssh/authorized_keys
-
-    /bin/chmod 700 /home/node/.ssh
-    /bin/chmod 600 /home/node/.ssh/authorized_keys
-    /bin/chown -R node:node /home/node
-}
-
-function create_root_password() { #  Ask for the users new root password
-    /bin/echo '[*] Type in user "root" password.'
-    read -sp "Password: " password_root_variable
-}
-
-function set_root_password() { #  Set the new password for the root user.
-    /bin/echo -e '[*] Changing user "root" password'
-    /bin/echo -e "$password_root_variable\n$password_root_variable\n" | /usr/bin/sudo /usr/bin/passwd root
-}
-
-function config_root_ssh_keys() { #  Create Admin User Secure File Structure SSH
-    if [ ! -d /root/.ssh ]; then
-        /bin/mkdir /root/.ssh
-        /usr/bin/touch /root/.ssh/authorized_keys
+    # User who invoked sudo, else first normal login user (uid >= 1000).
+    if [[ -n "${SUDO_USER:-}" ]] && id "${SUDO_USER}" &>/dev/null; then
+        ADMIN_USER="${SUDO_USER}"
+    else
+        ADMIN_USER=$(awk -F: '$3 >= 1000 && $3 < 65534 {print $1; exit}' /etc/passwd)
     fi
 
-    if [ ! -f /root/.ssh/authorized_keys ]; then
-        /usr/bin/touch /root/.ssh/authorized_keys
+    if [[ -z "${ADMIN_USER}" ]]; then
+        echo '[*] Error: could not detect admin user. Set ADMIN_USER=myuser'
+        exit 1
     fi
-    /bin/echo "Please copy/paste your authorized key for 'root' user:"
-    read -r -p ">>> " keyValue
-    /bin/echo "$keyValue" >> /root/.ssh/authorized_keys
-
-    /bin/chmod 700 /root/.ssh
-    /bin/chmod 600 /root/.ssh/authorized_keys
-    /bin/chown -R root:root /root
+    echo "[*] Admin user: ${ADMIN_USER}"
 }
 
-function ask_for_hostname() { #  Ask for the users new root password
-    /bin/echo '[*] Changing hostname for this pi.'
-    read -r -p "New Hostname: " user_requested_hostname
-}
-
-function set_hostname() { #  Request hostname.
-    /bin/echo "[*] Setting hostname to "$user_requested_hostname""
-    /usr/bin/hostnamectl set-hostname $user_requested_hostname
-}
-
-function cleanup_etc_hosts() { #  Remove the raspberrypi hostname from /etc/hosts
-    /bin/sed -i '/raspberrypi/d' /etc/hosts
-}
-
-function set_etc_hosts_manually() { #  Add new hostname to /etc/hosts.
-    /bin/echo "$(ifconfig | grep eth0 -A1 | grep inet | awk '{print $2}')" "$(hostnamectl --static)" >> /etc/hosts
-}
-
-function secure_sudo_raspbian() { #  Require password when using /usr/bin/sudo for pi and node users.
-    /bin/sed -i 's/NOPASSWD/PASSWD/g' /etc/sudoers.d/010_pi-nopasswd
-    mv /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/010_pi-passwd
-    /usr/bin/touch /etc/sudoers.d/010_node-passwd
-    cat /etc/sudoers.d/010_pi-passwd > /etc/sudoers.d/010_node-passwd
-    /bin/sed -i 's/pi/node/g' /etc/sudoers.d/010_node-passwd
-}
-
-function secure_sudo_ubuntu() { #  Require password when using /usr/bin/sudo for ubuntu or node users.
-    /bin/sed -i 's/NOPASSWD/PASSWD/g' /etc/sudoers.d/90-cloud-init-users
-    /bin/echo "# User rules for node" >> /etc/sudoers.d/90-cloud-init-users
-    /bin/echo "node ALL=(ALL) PASSWD:ALL" >> /etc/sudoers.d/90-cloud-init-users
-}
-
-function configure_sshd() { #  Add a Banner to ssh requiring permission to get into the Pi.
-    /bin/echo "" > /etc/issue.net
-    /bin/echo "               #####################################################" >> /etc/issue.net
-    /bin/echo "               # Unauthorized access to this machine is prohibited #" >> /etc/issue.net
-    /bin/echo "               #  Speak with the owner first to obtain Permission  #" >> /etc/issue.net
-    /bin/echo "               #####################################################" >> /etc/issue.net
-    /bin/echo "" >> /etc/issue.net
-    /bin/echo "" >> /etc/issue.net
-    /bin/echo "" >> /etc/issue.net
-    /bin/echo "" >> /etc/issue.net
-    /bin/sed -i 's/#Banner\ none/Banner\ \/etc\/issue.net/g' /etc/ssh/sshd_config
-    /bin/sed -i 's/#PermitRootLogin\ prohibit-password/PermitRootLogin\ yes/g' /etc/ssh/sshd_config
-    /bin/sed -i 's/#PasswordAuthentication\ yes/PasswordAuthentication\ no/g' /etc/ssh/sshd_config
-    /bin/sed -i 's/#AuthorizedKeysFile/AuthorizedKeysFile/g' /etc/ssh/sshd_config
-    #/bin/echo -e "AllowUsers node" >> /etc/ssh/sshd_config
-}
-
-function deny_default_user() { #  If default users exist, blacklist them from ssh.
-    if [ $(/bin/cat /etc/passwd | /bin/grep pi | /usr/bin/wc -l) -eq 1 ]; then
-        /bin/echo -e "DenyUsers pi" >> /etc/ssh/sshd_config
-    elif [ $(/bin/cat /etc/passwd | /bin/grep ubuntu | /usr/bin/wc -l) -eq 1 ]; then
-        /bin/echo -e "DenyUsers ubuntu" >> /etc/ssh/sshd_config
+function set_keyboard_english() {
+    if [[ -f /etc/default/keyboard ]]; then
+        sed -i 's/gb/us/g; s/GB/us/g' /etc/default/keyboard 2>/dev/null || true
+        echo '[*] Keyboard layout set to US (if configured).'
     fi
 }
 
-function enable_restart_ssh() { # Enable and restart ssh.
-    /usr/bin/sudo systemctl enable ssh
-    /usr/bin/sudo systemctl restart ssh
+function prompt_admin_password() {
+    echo "[*] Set a strong password for ${ADMIN_USER} (sudo will require it after this)."
+    passwd "${ADMIN_USER}"
 }
 
-function update_apt() { #  Update apt repo for up to date packaging
-    /usr/bin/sudo apt-get update -y
-    /usr/bin/sudo apt-get upgrade -y
-    /usr/bin/sudo apt-get dist-upgrade -y
-    /usr/bin/sudo apt-get autoclean -y
-    /usr/bin/sudo apt-get autoremove -y
+function create_node_user_if_requested() {
+    [[ "${CREATE_NODE_USER}" == "true" ]] || return 0
+    if id node &>/dev/null; then
+        echo '[*] User "node" already exists.'
+    else
+        echo '[*] Creating user "node".'
+        useradd -m -s /bin/bash -U node
+        passwd node
+        usermod -aG adm,dialout,cdrom,sudo,audio,video,plugdev,users,input,netdev,gpio,i2c,spi node 2>/dev/null \
+            || usermod -aG adm,dialout,cdrom,sudo,audio,video,plugdev,users,netdev node
+    fi
+    SSH_ALLOW_USERS+=("node")
 }
 
-function install_iptables() { #  Install persisent iptables
-    /usr/bin/sudo apt-get install iptables-persistent -y
+function ssh_user_has_keys() {
+    local user="$1"
+    local auth_keys
+    auth_keys=$(eval echo "~${user}")/.ssh/authorized_keys
+    [[ -s "${auth_keys}" ]] || return 1
+    # Imager / cloud-init typically adds ssh-ed25519, ssh-rsa, or ecdsa keys.
+    grep -qE '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp256) ' "${auth_keys}" 2>/dev/null
 }
 
-function cgroup_to_bootfile() { #  Must use cgroup memory, needed in boot file
-    sed -i 's/$/\ cgroup_enable=cpuset\ cgroup_memory=1\ cgroup_enable=memory/' /boot/firmware/cmdline.txt
+function ensure_ssh_dir_permissions() {
+    local user="$1"
+    local home_dir ssh_dir
+    home_dir=$(eval echo "~${user}")
+    ssh_dir="${home_dir}/.ssh"
+    mkdir -p "${ssh_dir}"
+    touch "${ssh_dir}/authorized_keys"
+    chmod 700 "${ssh_dir}"
+    chmod 600 "${ssh_dir}/authorized_keys"
+    chown -R "${user}:${user}" "${ssh_dir}"
 }
 
-function enable_iptables_for_k3s() {
-    /usr/bin/sudo /usr/sbin/iptables -F
-    /usr/bin/sudo /usr/bin/update-alternatives --set iptables /usr/sbin/iptables-legacy
-    /usr/bin/sudo /usr/bin/update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+function add_ssh_pubkey() {
+    local user="$1"
+    ensure_ssh_dir_permissions "${user}"
+
+    if ssh_user_has_keys "${user}"; then
+        local count
+        count=$(grep -cE '^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp256) ' "$(eval echo "~${user}")/.ssh/authorized_keys" 2>/dev/null || echo 0)
+        echo "[*] SSH key(s) already configured for '${user}' (${count} key(s), e.g. from Raspberry Pi Imager) — skipping."
+        return 0
+    fi
+
+    echo "[*] No SSH public key found for '${user}'."
+    echo "[*] Paste one SSH public key (single line), then press Enter:"
+    read -r key_line
+    if [[ -n "${key_line}" ]]; then
+        if ! grep -qF "${key_line}" "$(eval echo "~${user}")/.ssh/authorized_keys" 2>/dev/null; then
+            echo "${key_line}" >> "$(eval echo "~${user}")/.ssh/authorized_keys"
+        fi
+        ensure_ssh_dir_permissions "${user}"
+        echo "[*] SSH key added for '${user}'."
+    else
+        echo "[*] Error: no key provided for '${user}'."
+        echo '    Add a key in Raspberry Pi Imager or paste one here, then re-run secure_pi.sh.'
+        return 1
+    fi
 }
 
-function install_firewall() { #  Install the firewall and allow port 22
-    /usr/bin/sudo apt-get install ufw -y
-    /usr/bin/sudo ufw enable
-    /usr/bin/sudo ufw allow 22/tcp
-    /usr/bin/sudo ufw status
+function setup_ssh_keys() {
+    SSH_ALLOW_USERS=("${ADMIN_USER}")
+    create_node_user_if_requested
+    add_ssh_pubkey "${ADMIN_USER}" || exit 1
+    if id node &>/dev/null; then
+        add_ssh_pubkey node || exit 1
+    fi
 }
 
-function reboot_pi() { #  Reboot the pi
-    /bin/echo '[*] Rebooting the pi in 5 seconds.'
-    sleep 5
+function verify_admin_ssh_key() {
+    if ssh_user_has_keys "${ADMIN_USER}"; then
+        return 0
+    fi
+    echo "[*] Error: ${ADMIN_USER} has no SSH public key in ~/.ssh/authorized_keys."
+    echo '    Configure one in Raspberry Pi Imager (recommended) or re-run and paste a key.'
+    exit 1
+}
+
+function ask_for_hostname() {
+    local current
+    current=$(hostnamectl --static 2>/dev/null || hostname -s)
+    echo "[*] Current hostname: ${current}"
+    read -r -p '[*] New hostname (Enter to keep current): ' user_requested_hostname
+    if [[ -n "${user_requested_hostname}" ]]; then
+        hostnamectl set-hostname "${user_requested_hostname}"
+        echo "[*] Hostname set to ${user_requested_hostname}"
+    fi
+}
+
+function update_etc_hosts() {
+    local ip hostname_short
+    hostname_short=$(hostnamectl --static 2>/dev/null || hostname -s)
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [[ -z "${ip}" ]]; then
+        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    fi
+    sed -i '/raspberrypi/d' /etc/hosts
+    if [[ -n "${ip}" && -n "${hostname_short}" ]]; then
+        if ! grep -qE "[[:space:]]${hostname_short}([[:space:]]|$)" /etc/hosts; then
+            echo "${ip} ${hostname_short}" >> /etc/hosts
+        fi
+        echo "[*] /etc/hosts: ${ip} ${hostname_short}"
+    fi
+}
+
+function require_sudo_password() {
+    echo '[*] Requiring a password for sudo (removing NOPASSWD rules).'
+    local f
+    for f in /etc/sudoers.d/*; do
+        [[ -f "${f}" ]] || continue
+        sed -i 's/NOPASSWD: ALL/PASSWD: ALL/g; s/NOPASSWD:ALL/PASSWD:ALL/g' "${f}"
+    done
+    if ! grep -q "^${ADMIN_USER} " /etc/sudoers.d/* 2>/dev/null \
+        && ! grep -q "^${ADMIN_USER} " /etc/sudoers 2>/dev/null; then
+        echo "${ADMIN_USER} ALL=(ALL) PASSWD:ALL" > "/etc/sudoers.d/090-${ADMIN_USER}"
+        chmod 440 "/etc/sudoers.d/090-${ADMIN_USER}"
+    fi
+}
+
+function lock_legacy_users() {
+    if id pi &>/dev/null; then
+        echo '[*] Locking legacy "pi" account.'
+        passwd -l pi 2>/dev/null || true
+        SSH_DENY_USERS+=("pi")
+    fi
+}
+
+function write_ssh_banner() {
+    cat >/etc/issue.net <<'EOF'
+
+  #####################################################################
+  #  Unauthorized access to this system is prohibited.               #
+  #####################################################################
+
+EOF
+}
+
+function configure_sshd() {
+    write_ssh_banner
+    lock_legacy_users
+
+    local allow_users deny_users
+    allow_users=$(IFS=,; echo "${SSH_ALLOW_USERS[*]}")
+    deny_users=""
+    if [[ ${#SSH_DENY_USERS[@]} -gt 0 ]]; then
+        deny_users=$(IFS=,; echo "${SSH_DENY_USERS[*]}")
+    fi
+
+    mkdir -p /etc/ssh/sshd_config.d
+    cat >/etc/ssh/sshd_config.d/99-secure-pi.conf <<EOF
+# Managed by secure_pi.sh — do not edit by hand; change secure_pi.sh and re-run.
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+Banner /etc/issue.net
+AllowUsers ${allow_users}
+EOF
+
+    if [[ -n "${deny_users}" ]]; then
+        echo "DenyUsers ${deny_users}" >> /etc/ssh/sshd_config.d/99-secure-pi.conf
+    fi
+
+    if id ubuntu &>/dev/null; then
+        echo "DenyUsers ubuntu" >> /etc/ssh/sshd_config.d/99-secure-pi.conf
+    fi
+
+    systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null || true
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    echo '[*] SSH configured: key-only login, root login disabled.'
+    echo "    Allowed users: ${allow_users}"
+}
+
+function disable_swap() {
+    echo '[*] Disabling swap (required for Kubernetes).'
+    swapoff -a 2>/dev/null || true
+    sed -i.bak-secure-pi '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
+    if [[ -f /etc/dphys-swapfile ]]; then
+        systemctl disable dphys-swapfile 2>/dev/null || true
+        systemctl stop dphys-swapfile 2>/dev/null || true
+    fi
+}
+
+function ensure_cgroup_memory() {
+    local cmdline_files=("/boot/firmware/cmdline.txt" "/boot/cmdline.txt")
+    local cgroup_opts='cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory'
+    local f changed=0
+
+    for f in "${cmdline_files[@]}"; do
+        [[ -f "${f}" ]] || continue
+        if grep -q 'cgroup_enable=memory' "${f}"; then
+            echo "[*] cgroup memory already enabled in ${f}"
+            return 0
+        fi
+        sed -i "s/$/ ${cgroup_opts}/" "${f}"
+        echo "[*] Added cgroup options to ${f}"
+        changed=1
+    done
+
+    if [[ ${changed} -eq 1 ]]; then
+        echo '[*] cgroup boot parameters added — reboot required before k3s install.'
+        NEEDS_REBOOT=true
+    fi
+}
+
+function enable_ip_forwarding() {
+    tee /etc/sysctl.d/99-kubernetes.conf >/dev/null <<EOF
+net.ipv4.ip_forward = 1
+EOF
+    sysctl --system >/dev/null
+}
+
+function enable_iptables_legacy() {
+    echo '[*] Setting iptables to legacy mode (k3s compatibility).'
+    update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+}
+
+function install_k3s_firewall() {
+    echo '[*] Configuring UFW for SSH + k3s cluster traffic.'
+    apt-get install -y ufw
+
+    # Allow outbound by default; restrict inbound.
+    ufw default deny incoming
+    ufw default allow outgoing
+
+    ufw allow 22/tcp comment 'SSH'
+    ufw allow 6443/tcp comment 'k3s API'
+    ufw allow 10250/tcp comment 'kubelet'
+    ufw allow 8472/udp comment 'Calico VXLAN'
+    ufw allow 4789/udp comment 'VXLAN'
+    ufw allow 51820/udp comment 'Calico Wireguard'
+    ufw allow 30000:32767/tcp comment 'NodePort range'
+
+    ufw --force enable
+    ufw status verbose
+}
+
+function update_apt() {
+    echo '[*] Updating packages.'
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    apt-get autoremove -y
+    apt-get autoclean -y
+}
+
+function install_unattended_upgrades() {
+    echo '[*] Enabling unattended security upgrades.'
+    apt-get install -y unattended-upgrades apt-listchanges
+    dpkg-reconfigure -plow unattended-upgrades 2>/dev/null || true
+}
+
+function maybe_reboot() {
+    if [[ "${SKIP_REBOOT}" == "true" ]]; then
+        echo '[*] SKIP_REBOOT=true — not rebooting.'
+        return
+    fi
+    echo ''
+    echo '================================================================================'
+    if [[ "${NEEDS_REBOOT:-false}" == "true" ]]; then
+        echo '[*] Reboot REQUIRED (cgroup boot parameters were changed).'
+    else
+        echo '[*] Reboot recommended to apply all changes.'
+    fi
+    echo '    Test SSH in a NEW terminal before closing this session:'
+    echo "      ssh ${ADMIN_USER}@<pi-ip>"
+    if ! ssh_user_has_keys "${ADMIN_USER}" 2>/dev/null; then
+        echo ''
+        echo '    WARNING: No SSH key detected for admin user — add a key before reboot'
+        echo '      or you may be locked out when password auth is disabled.'
+    fi
+    echo ''
+    echo '    Next step after reboot:'
+    echo '      sudo bash rpi_container_toolkit.sh --master-k3s   # or --worker-k3s'
+    echo '================================================================================'
+    echo '[*] Rebooting in 10 seconds (Ctrl+C to cancel)...'
+    sleep 10
     reboot
 }
 
-################################
-# Functions to run on execute. #
-################################
+function secure_pi_os() {
+    SSH_DENY_USERS=()
+    NEEDS_REBOOT=false
 
-############################
-# Functions to be executed #
-############################
+    run_as_root
+    detect_admin_user
+    set_keyboard_english
+    prompt_admin_password
+    setup_ssh_keys
+    ask_for_hostname
+    update_etc_hosts
+    require_sudo_password
+    disable_swap
+    ensure_cgroup_memory
+    enable_ip_forwarding
+    enable_iptables_legacy
+    verify_admin_ssh_key
+    configure_sshd
+    update_apt
+    install_unattended_upgrades
+    install_k3s_firewall
+    maybe_reboot
+}
 
+function secure_ubuntu() {
+    SSH_DENY_USERS=()
+    NEEDS_REBOOT=false
+
+    run_as_root
+    detect_admin_user
+    prompt_admin_password
+    setup_ssh_keys
+    ask_for_hostname
+    update_etc_hosts
+    require_sudo_password
+    disable_swap
+    ensure_cgroup_memory
+    enable_ip_forwarding
+    enable_iptables_legacy
+    verify_admin_ssh_key
+    configure_sshd
+    update_apt
+    install_unattended_upgrades
+    install_k3s_firewall
+    maybe_reboot
+}
 
 case "$1" in
+    --pi-os|--raspbian)
+        secure_pi_os
+        ;;
     --ubuntu)
-        run_as_root
-        create_node_password
-        create_node_user
-        ubuntu_node_user_groups
-        config_node_ssh_keys
-        create_root_password
-        set_root_password
-        config_root_ssh_keys
-        ask_for_hostname
-        set_hostname
-        set_etc_hosts_manually
-        secure_sudo_ubuntu
-        configure_sshd
-        deny_default_user
-        enable_restart_ssh
-        enable_iptables_for_k3s
-        cgroup_to_bootfile
-        update_apt
-        reboot_pi
+        secure_ubuntu
         ;;
-    --raspbian)
-        run_as_root
-        set_keyboard_english
-        create_pi_password
-        set_pi_password
-        create_node_password
-        create_node_user
-        raspbian_node_user_groups
-        config_node_ssh_keys
-        create_root_password
-        set_root_password
-        config_root_ssh_keys
-        ask_for_hostname
-        set_hostname
-        cleanup_etc_hosts
-        set_etc_hosts_manually
-        secure_sudo_raspbian
-        configure_sshd
-        deny_default_user
-        enable_restart_ssh
-        update_apt
-        install_iptables
-        install_firewall
-        reboot_pi
-        ;;
-    -h)
-        _help_menu
-        ;;
-    --help)
+    -h|--help)
         _help_menu
         ;;
     *)
