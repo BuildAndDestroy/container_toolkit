@@ -1,359 +1,374 @@
 #!/bin/bash
+#
+# Raspberry Pi k3s + Calico cluster installer (Pi 4, 64-bit OS recommended).
+# Run as root on each node: one --master-k3s, then --worker-k3s on the others.
+#
 
-############################################
-# Prepare and install k8's on raspberry pi #
-#            Tested on Pi4b                #
-############################################
+set -o pipefail
 
-function run_as_root() { #  Best to run as root
-    if [[ $(/usr/bin/id -u) != 0 ]]; then
-        /bin/echo '[*] Must be ran as root.'
-        exit
+K3S_VERSION="${K3S_VERSION:-}"   # empty = latest stable from get.k3s.io
+CALICO_VERSION="${CALICO_VERSION:-v3.31.2}"
+CLUSTER_CIDR="${CLUSTER_CIDR:-192.168.0.0/16}"
+K3S_SERVER_URL="${K3S_SERVER_URL:-}"
+K3S_TOKEN="${K3S_TOKEN:-}"
+
+function run_as_root() {
+    if [[ $(id -u) != 0 ]]; then
+        echo '[*] Must be run as root (sudo bash rpi_container_toolkit.sh ...).'
+        exit 1
     fi
 }
 
 function _help_menu() {
-    # Help menu
-    echo '[*] Help Menu:'
+    echo '[*] Help Menu — Raspberry Pi k3s cluster'
     echo ''
-    #echo '[*] --init       Run first on every pi! Then move on to --master OR --worker. TURNED OFF FOR NOW.'
-    #echo '                      bash rpi_container_toolkit.sh --init'
-    # echo ''
-    # echo '[*] --master     Install full Kubernetes k8s MASTER NODE Calico and Docker. DOES NOT WORK'
-    # echo '                      bash rpi_container_toolkit.sh --master'
-    # echo ''
-    # echo '[*] --worker     Install full Kubernetes k8s WORKER NODE and Docker. DOES NOT WORK'
-    # echo '                      bash rpi_container_toolkit.sh --worker'
-    # echo ''
-    echo '[*] --rancherk3s-master    The generic k3s install for Master.'
-    echo '                             bash rpi_container_toolkit.sh --rancherk3s-master'
+    echo '[*] --master-k3s       Control plane + Calico (runs workloads on this node).'
+    echo '                      sudo bash rpi_container_toolkit.sh --master-k3s'
     echo ''
-    echo '[*] --rancherk3s-worker    The generic k3s install for Worker.'
-    echo '                             bash rpi_container_toolkit.sh --rancherk3s-worker'
+    echo '[*] --worker-k3s       Join cluster as agent (provide token + server IP).'
+    echo '                      sudo bash rpi_container_toolkit.sh --worker-k3s --server 192.168.1.10 --token <token>'
+    echo '                      Or set K3S_SERVER_URL and K3S_TOKEN before running.'
     echo ''
+    echo '[*] --master-k3s-docker   Same as master but use Docker as the runtime.'
+    echo '[*] --worker-k3s-docker   Same as worker but use Docker as the runtime.'
     echo ''
-    echo '    ###### FOR THE DOCKER USERS - use below options to install Docker instead of containerd ######'
+    echo '[*] --helm             Install Helm 3 on this node.'
+    echo '[*] --openfaas-master  Install OpenFaaS (optional, on master).'
+    echo '[*] --arkade-master    Install arkade CLI (optional, on master).'
+    echo '[*] --clean            Remove k3s from this node (destructive).'
     echo ''
+    echo 'Legacy aliases: --rancherk3s-master, --rancherk3s-worker, --rancherk3s-*-docker'
     echo ''
-    echo '[*] --rancherk3s-master-docker    K3s install for Master but with Docker instead of containerd.'
-    echo '                                    bash rpi_container_toolkit.sh --rancherk3s-master-docker'
-    echo ''
-    echo '[*] --rancherk3s-worker-docker    K3s install for Worker but with Docker instead of containerd.'
-    echo '                                    bash rpi_container_toolkit.sh --rancherk3s-worker-docker'
-    echo ''
-    echo ''
-    echo '       >>> Use below to install frameworks known to work on k3s.'
-    echo ''
-    echo '[*] --helm-master          Install Helm3 to Master'
-    echo '                               bash rpi_container_toolkit.sh --helm'
-    echo ''
-    echo '[*] --openfaas-master      Install on master - openfaas repo and cli tools.'
-    echo '                               bash rpi_container_toolkit.sh --openfaas-master'
-    echo ''
-    echo '[*] --arkade-master         Install on master - arkade repo and cli tools.'
-    echo '                               bash rpi_container_toolkit.sh --arkade-master'
-    echo ''
-    exit
+    echo "Defaults: CALICO_VERSION=${CALICO_VERSION} CLUSTER_CIDR=${CLUSTER_CIDR}"
+    echo '          K3S_VERSION=(latest if unset)'
+    exit 0
 }
 
-function update_apt() { #  Update apt repo for up to date packaging
-    /usr/bin/sudo apt-get update -y
-    /usr/bin/sudo apt-get upgrade -y
-    /usr/bin/sudo apt-get dist-upgrade -y
-    /usr/bin/sudo apt-get autoclean -y
-    /usr/bin/sudo apt-get autoremove -y
+function node_ip() {
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [[ -z "${ip}" ]]; then
+        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    fi
+    echo "${ip}"
 }
 
-function enable_traffic_forwarding() {
-    /bin/echo "[*] Allowing traffic forwarding."
-    /bin/sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
-    /bin/sed -i '/^net.ipv4.ip_forward=1/a net.ipv4.ip_nonlocal_bind=1' /etc/sysctl.conf
+function set_hostname_in_hosts() {
+    local ip hostname_short
+    ip=$(node_ip)
+    hostname_short=$(hostnamectl --static 2>/dev/null || hostname -s)
+    if [[ -n "${ip}" && -n "${hostname_short}" ]]; then
+        if ! grep -qE "[[:space:]]${hostname_short}([[:space:]]|$)" /etc/hosts; then
+            echo "${ip} ${hostname_short}" >> /etc/hosts
+        fi
+        echo "[*] /etc/hosts: ${ip} ${hostname_short}"
+    fi
 }
 
 function disable_swap() {
-    /bin/echo "[*] Disabling Swap"
-    /sbin/swapoff -av
-    /usr/bin/free
+    echo '[*] Disabling swap.'
+    swapoff -a 2>/dev/null || true
+    sed -i.bak-k3s '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
+    if [[ -f /etc/dphys-swapfile ]]; then
+        systemctl disable dphys-swapfile 2>/dev/null || true
+        systemctl stop dphys-swapfile 2>/dev/null || true
+    fi
 }
 
-function install_docker() { #  Use docker's shell script to install.
-    /bin/echo "[*] Installing Docker"
-    /usr/bin/curl -sSL get.docker.com | /bin/sh && /usr/sbin/usermod node -aG docker
+function enable_traffic_forwarding() {
+    echo '[*] Enabling IPv4 forwarding.'
+    tee /etc/sysctl.d/99-kubernetes.conf >/dev/null <<EOF
+net.ipv4.ip_forward = 1
+net.ipv4.ip_nonlocal_bind = 1
+EOF
+    sysctl --system >/dev/null
 }
 
-function ufw_ports_allowed() { #  Enable NAT forwarding, masquerade, and reqired ports.
-    /bin/echo "[*] Enabling required ports."
-    /usr/bin/sudo apt-get install ufw -y
-    /usr/bin/sudo /usr/sbin/ufw enable
-    /bin/sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/g' /etc/default/ufw
-    /bin/sed -i 's@#net/ipv4/ip_forward=1@net/ipv4/ip_forward=1@g' /etc/ufw/sysctl.conf
-    #     sed -i '/^*filter/i # NAT table rules
-    #     *nat
-    # :PREROUTING ACCEPT [0:0]
-    # :POSTROUTING ACCEPT [0:0]
+function ensure_cgroup_memory() {
+    local cmdline_files=("/boot/firmware/cmdline.txt" "/boot/cmdline.txt")
+    local cgroup_opts='cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory'
+    local f opts_file changed=0
 
-    # # Port Forwardings
-    # -A PREROUTING -i eth0 -p tcp --dport 22 -j DNAT --to-destination 10.96.0.0
+    for f in "${cmdline_files[@]}"; do
+        [[ -f "${f}" ]] || continue
+        opts_file="${f}"
+        if grep -q 'cgroup_enable=memory' "${f}"; then
+            echo "[*] cgroup memory already enabled in ${f}"
+            return 0
+        fi
+        sed -i "s/$/ ${cgroup_opts}/" "${f}"
+        echo "[*] Added cgroup options to ${f}"
+        changed=1
+    done
 
-    # # Forward traffic through eth0 - Change to match you out-interface
-    # -A POSTROUTING -s 10.96.0.0/16 -o eth0 -j MASQUERADE
+    if [[ ${changed} -eq 1 ]]; then
+        echo '[*] REBOOT REQUIRED for cgroup boot parameters to take effect.'
+        echo '    Run: sudo reboot'
+        echo '    Then re-run this script on the node.'
+        exit 0
+    fi
 
-    # # don't delete the 'COMMIT' line or these nat table rules won't
-    # # be processed
-    # COMMIT' /etc/ufw/before.rules
-    /usr/bin/sudo /usr/sbin/ufw allow 22/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 80/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 443/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 2376/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 2379/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 2380/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 4789/udp
-    /usr/bin/sudo /usr/sbin/ufw allow 6443/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 6783:6784/udp
-    /usr/bin/sudo /usr/sbin/ufw allow 8472/udp
-    /usr/bin/sudo /usr/sbin/ufw allow 9099/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 10250/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 10251/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 10252/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 10254/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 10255/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 30000:32767/tcp
-    /usr/bin/sudo /usr/sbin/ufw allow 30000:32767/udp
-    /usr/bin/sudo /usr/sbin/ufw reload
+    if [[ -z "${opts_file:-}" ]]; then
+        echo '[*] Warning: could not find cmdline.txt; ensure cgroup memory is enabled for k3s.'
+    fi
 }
 
-function install_kubernetes() { #  Install Kubernetes
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
-    /usr/bin/sudo apt-key add - && echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | \
-    /usr/bin/sudo tee /etc/apt/sources.list.d/kubernetes.list && /usr/bin/sudo apt-get update -q
-    /usr/bin/sudo apt-get -y install kubelet kubectl kubeadm
+function install_base_packages() {
+    apt-get update -y
+    apt-get install -y curl wget apt-transport-https ca-certificates
 }
 
-# function set_cgroup_driver() {
-#     # Update cgroup driver for kubernetes
-#     echo '[*] Verify Docker cgroupfs'
-#     docker info | grep -i cgroup
-#     echo '[*] Updating Docker to use same cgroup.'
-# cat > /etc/docker/daemon.json <<EOF
-# {
-#   "exec-opts": ["native.cgroupdriver=systemd"],
-#   "log-driver": "json-file",
-#   "log-opts": {
-#     "max-size": "100m"
-#   },
-#   "storage-driver": "overlay2",
-#   "storage-opts": [
-#     "overlay2.override_kernel_check=true"
-#   ]
-# }
-# EOF
-#     mkdir -p /etc/systemd/system/docker.service.d
-#     systemctl daemon-reload
-#     systemctl restart docker
-#     systemctl restart kubelet
-# }
-
-function cgroup_to_bootfile() { #  Must use cgroup memory, needed in boot file
-    sed -i 's/$/\ cgroup_enable=cpuset\ cgroup_memory=1\ cgroup_enable=memory/' /boot/firmware/cmdline.txt
+function k3s_install_env() {
+    export K3S_KUBECONFIG_MODE="${K3S_KUBECONFIG_MODE:-644}"
+    if [[ -n "${K3S_VERSION}" ]]; then
+        export INSTALL_K3S_VERSION="${K3S_VERSION}"
+    fi
 }
 
-function reboot_the_pi() {
-    echo '[*] Rebooting the pi in 5 seconds'
-    sleep 5
-    /sbin/reboot
+function k3s_master_exec_args() {
+    local use_docker="${1:-false}"
+    local args ip
+    args=(
+        server
+        --flannel-backend=none
+        --disable-network-policy
+        --cluster-cidr="${CLUSTER_CIDR}"
+        --disable=traefik
+    )
+    if [[ "${use_docker}" == "true" ]]; then
+        args+=(--docker)
+    fi
+    ip=$(node_ip)
+    if [[ -n "${ip}" ]]; then
+        args+=(--tls-san="${ip}" --node-ip="${ip}" --advertise-address="${ip}")
+    fi
+    echo "${args[*]}"
 }
 
-#################
-# Master node
-
-function kubernetes_api_server() {
-    # Beginning of Master node setup.
-    echo '[*] Starting Master node.'
-    kubeadm init #--pod-network-cidr=192.168.0.0/16
-    mkdir -p $HOME/.kube
-    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+function install_k3s_master() {
+    local use_docker="${1:-false}"
+    k3s_install_env
+    local exec_args
+    exec_args=$(k3s_master_exec_args "${use_docker}")
+    echo "[*] Installing k3s server (${exec_args})"
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="${exec_args}" sh -
+    export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 }
 
-function install_calico_network_policy() {
-    # Install the calico pod network.
-    # curl https://docs.projectcalico.org/v3.11/manifests/calico.yaml -O
-    curl https://docs.projectcalico.org/master/manifests/calico.yaml -O
-    sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
-    kubectl apply -f calico.yaml
-    echo '[*] Check pods with "kubectl get pods --all-namespaces".'
-    kubectl get pods --all-namespaces
+function install_k3s_worker() {
+    local use_docker="${1:-false}"
+    shift
+    resolve_worker_credentials "$@"
+
+    k3s_install_env
+    local pi_hostname
+    pi_hostname=$(hostname -s)
+    local exec_args="agent"
+    if [[ "${use_docker}" == "true" ]]; then
+        exec_args="agent --docker"
+    fi
+
+    echo "[*] Joining k3s cluster at ${K3S_SERVER_URL} as ${pi_hostname}"
+    curl -sfL https://get.k3s.io | \
+        K3S_URL="${K3S_SERVER_URL}" \
+        K3S_TOKEN="${K3S_TOKEN}" \
+        K3S_NODE_NAME="${pi_hostname}" \
+        INSTALL_K3S_EXEC="${exec_args}" \
+        sh -
 }
 
-function install_calicoctl() {
-    echo '[*] Installing calicoctl as a pod'
-    kubectl apply -f https://docs.projectcalico.org/manifests/calicoctl.yaml
-    kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
+function resolve_worker_credentials() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server) K3S_SERVER_URL="https://$2:6443"; shift 2 ;;
+            --token)  K3S_TOKEN="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "${K3S_SERVER_URL}" ]]; then
+        local master_ip
+        read -r -p '[*] Master node IP address: ' master_ip
+        K3S_SERVER_URL="https://${master_ip}:6443"
+    elif [[ "${K3S_SERVER_URL}" != https://* ]]; then
+        K3S_SERVER_URL="https://${K3S_SERVER_URL}:6443"
+    fi
+
+    if [[ -z "${K3S_TOKEN}" ]]; then
+        read -r -p '[*] Node token (from master /var/lib/rancher/k3s/server/node-token): ' K3S_TOKEN
+    fi
 }
 
-#############
-# Worker
+function install_calico() {
+    local workdir
+    workdir=$(mktemp -d)
+    export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
-function join_worker_node() {
-    echo '[*] Use the kubeadm join tool to join the master. If you lost this, then run on Master to get the join command:'
-    echo '        kubeadm token create --print-join-command'
+    echo "[*] Installing Calico ${CALICO_VERSION} for k3s."
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
+        -o "${workdir}/tigera-operator.yaml"
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
+        -o "${workdir}/custom-resources.yaml"
+
+    if [[ "${CLUSTER_CIDR}" != "192.168.0.0/16" ]]; then
+        sed -i "s|cidr: 192.168.0.0/16|cidr: ${CLUSTER_CIDR}|" "${workdir}/custom-resources.yaml"
+    fi
+
+    # Required for k3s + Calico (see Tigera k3s quickstart).
+    if ! grep -q 'containerIPForwarding' "${workdir}/custom-resources.yaml"; then
+        sed -i '/calicoNetwork:/a\    containerIPForwarding: Enabled' "${workdir}/custom-resources.yaml"
+    fi
+
+    kubectl apply -f "${workdir}/tigera-operator.yaml"
+    kubectl apply -f "${workdir}/custom-resources.yaml"
+
+    echo '[*] Waiting for Calico (up to 10 minutes on Pi hardware).'
+    kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n calico-system --timeout=600s 2>/dev/null \
+        || kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=600s 2>/dev/null \
+        || echo '[*] Warning: calico-node not Ready yet; check: kubectl get pods -A'
+
+    rm -rf "${workdir}"
 }
 
-#############
-# k3s Master
-
-function k3s_master_kubernetes() {
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--flannel-backend=none --disable-network-policy --cluster-cidr=10.1.0.0/16 --disable=traefik" K3S_KUBECONFIG_MODE="644" INSTALL_K3S_VERSION="v1.20.14+k3s2"  sh -
-    # curl -sfL https://get.k3s.io | sh -
-    wget -c https://docs.projectcalico.org/manifests/calico.yaml
-    kubectl apply -f calico.yaml
-    /bin/cat /var/lib/rancher/k3s/server/node-token
+function print_master_join_info() {
+    local token ip
+    token=$(cat /var/lib/rancher/k3s/server/node-token 2>/dev/null || true)
+    ip=$(node_ip)
+    echo ''
+    echo '================================================================================'
+    echo '[*] k3s control plane is running.'
+    echo ''
+    echo '  Kubeconfig:  /etc/rancher/k3s/k3s.yaml'
+    echo '  Node token:  /var/lib/rancher/k3s/server/node-token'
+    echo ''
+    if [[ -n "${token}" && -n "${ip}" ]]; then
+        echo '  On each worker Pi, run:'
+        echo "    sudo bash rpi_container_toolkit.sh --worker-k3s --server ${ip} --token ${token}"
+        echo ''
+        echo '  Or manually:'
+        echo "    curl -sfL https://get.k3s.io | K3S_URL=https://${ip}:6443 K3S_TOKEN=${token} sh -"
+    fi
+    echo ''
+    echo '  Verify on master:'
+    echo '    kubectl get nodes -o wide'
+    echo '    kubectl get pods -A'
+    echo '================================================================================'
+    echo ''
 }
 
-function k3s_systemctl_docker() {
-    /usr/local/bin/k3s-killall.sh
-    /bin/sed -i 's#server\ \\##g' /etc/systemd/system/k3s.service
-    /bin/sed -i 's#ExecStart=/usr/local/bin/k3s\ \\#ExecStart=/usr/local/bin/k3s\ server\ --docker#g' /etc/systemd/system/k3s.service
-    systemctl daemon-reload
-    systemctl stop k3s
-    systemctl start k3s
+function install_docker() {
+    echo '[*] Installing Docker.'
+    curl -fsSL https://get.docker.com | sh
 }
 
-#############
-# k3s Worker
-
-function k3s_worker_kubernetes() {
-    /bin/echo '[*] Type in the Master token from /var/lib/rancher/k3s/server/node-token'
-    read -r -p "Node Token: " k3s_token
-
-    /bin/echo '[*] Type in the Master nodes IP Address.'
-    read -r -p "Master's IP Address: " master_ip
-
-    export K3S_URL="https://"$master_ip":6443"
-    export K3S_TOKEN=""$k3s_token""
-    pi_hostname=$(/usr/bin/hostname)
-    curl -sfL https://get.k3s.io | K3S_TOKEN=""$k3s_token"" K3S_URL="https://"$master_ip":6443" K3S_NODE_NAME=""$pi_hostname"" INSTALL_K3S_VERSION="v1.20.14+k3s2" sh -
+function k3s_uninstall() {
+    echo '[*] Removing k3s from this node.'
+    if [[ -x /usr/local/bin/k3s-uninstall.sh ]]; then
+        /usr/local/bin/k3s-uninstall.sh
+    fi
+    if [[ -x /usr/local/bin/k3s-agent-uninstall.sh ]]; then
+        /usr/local/bin/k3s-agent-uninstall.sh
+    fi
 }
 
-#################
-#  Helm charts  #
-#################
-
-############
-# Helm
-
-function install_helm_three(){
-    curl https://baltocdn.com/helm/signing.asc | sudo apt-key add -
-    sudo apt-get install apt-transport-https --yes
-    echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
-    sudo apt-get update
-    sudo apt-get install helm
+function install_helm_three() {
+    curl -fsSL https://baltocdn.com/helm/signing.asc | gpg --dearmor | tee /usr/share/keyrings/helm.gpg >/dev/null
+    apt-get install -y apt-transport-https
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" \
+        | tee /etc/apt/sources.list.d/helm-stable-debian.list
+    apt-get update -y
+    apt-get install -y helm
 }
 
-############
-# k3s stores
-
-function install_openfaas() { #  Install openfaas pods and cli tool.
-    echo '[*] Installing Open-Faas pods and openfaas-cli.'
-    git clone https://github.com/openfaas/faas-netes.git
-    git clone https://github.com/openfaas/store
-    curl -sLS https://cli.openfaas.com | sh -
-    kubectl apply -f ./faas-netes/namespaces.yml
-    kubectl apply -f ./faas-netes/yaml_armhf/
-    echo 'sleeping 30 seconds before deploying pods'
-    sleep 30
-    faas-cli store deploy nodeinfo --gateway 127.0.0.1:31112
-    faas-cli store deploy certinfo --gateway 127.0.0.1:31112
-    faas-cli store deploy figlet --gateway 127.0.0.1:31112
+function install_openfaas() {
+    export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
+    echo '[*] Installing OpenFaaS (ARM manifests).'
+    git clone --depth 1 https://github.com/openfaas/faas-netes.git /tmp/faas-netes 2>/dev/null \
+        || true
+    curl -sLS https://cli.openfaas.com | sh
+    kubectl apply -f /tmp/faas-netes/namespaces.yml
+    if [[ -d /tmp/faas-netes/yaml_arm64 ]]; then
+        kubectl apply -f /tmp/faas-netes/yaml_arm64/
+    elif [[ -d /tmp/faas-netes/yaml_armhf ]]; then
+        kubectl apply -f /tmp/faas-netes/yaml_armhf/
+    else
+        kubectl apply -f /tmp/faas-netes/chart/
+    fi
+    echo '[*] OpenFaaS gateway often exposed on NodePort 31112 after pods are ready.'
 }
 
-function test_openfaas() { #  Test openfaas pods
-    echo "[*] Testing nodeinfo"
-    echo -n verbose | faas-cli invoke nodeinfo --gateway 127.0.0.1:31112
-    echo "[*] Testing certinfo"
-    curl http://127.0.0.1:31112/function/certinfo -d "google.com"
-    echo "[*] Testing node figlet"
-    echo 'yolo' | faas-cli invoke figlet --gateway http://127.0.0.1:31112
-    echo '[*] GUI should be at http://127.0.0.1:31112/ui/ or open the firewall for this port to reach remotely.'
+function install_arkade() {
+    curl -sLS https://dl.get-arkade.dev | sh
 }
 
-function install_arkade() { #  Install the arkade store for k3s apps.
-    echo '[*] Installing Arkade'
-    curl -sLS https://dl.get-arkade.dev | sudo sh -
+function prepare_node() {
+    install_base_packages
+    set_hostname_in_hosts
+    disable_swap
+    enable_traffic_forwarding
+    ensure_cgroup_memory
 }
 
+function master_flow() {
+    local use_docker="${1:-false}"
+    prepare_node
+    if [[ "${use_docker}" == "true" ]]; then
+        install_docker
+    fi
+    install_k3s_master "${use_docker}"
+    install_calico
+    print_master_join_info
+}
 
-############################
-# Functions to be executed #
-############################
+function worker_flow() {
+    local use_docker="${1:-false}"
+    shift
+    prepare_node
+    if [[ "${use_docker}" == "true" ]]; then
+        install_docker
+    fi
+    install_k3s_worker "${use_docker}" "$@"
+    echo '[*] Worker joined. Verify from master: kubectl get nodes -o wide'
+}
+
+# --- main ---
 
 case "$1" in
-    --init)
-        echo 'Pending the full K8s build.'
-        # run_as_root
-        # update_apt
-        # enable_traffic_forwarding
-        # disable_swap
-        # install_docker
-        # ufw_ports_allowed
-        # install_kubernetes
-        # set_cgroup_driver
-        # cgroup_to_bootfile
-        # reboot_the_pi
+    --master-k3s|--rancherk3s-master)
+        run_as_root
+        master_flow false
         ;;
-    --master)
-        # kubernetes_api_server
-        # install_calico_network_policy
-        # install_calicoctl
-        # If no join command, use "kubeadm token create --print-join-command"
-        echo 'Still testing, full k8s not working'
+    --worker-k3s|--rancherk3s-worker)
+        run_as_root
+        shift
+        worker_flow false "$@"
         ;;
-    --worker)
-        # join_worker_node
-        echo 'Still testing, full k8s not working'
+    --master-k3s-docker|--rancherk3s-master-docker)
+        run_as_root
+        master_flow true
         ;;
-    --rancherk3s-master)
-        cgroup_to_bootfile
-        # ufw_ports_allowed
-        k3s_master_kubernetes
-        reboot_the_pi
+    --worker-k3s-docker|--rancherk3s-worker-docker)
+        run_as_root
+        shift
+        worker_flow true "$@"
         ;;
-    --rancherk3s-worker)
-        cgroup_to_bootfile
-        # ufw_ports_allowed
-        k3s_worker_kubernetes
-        reboot_the_pi
-        ;;
-    --rancherk3s-master-docker)
-        cgroup_to_bootfile
-        install_docker
-        # ufw_ports_allowed
-        k3s_master_kubernetes
-        k3s_systemctl_docker
-        reboot_the_pi
-        ;;
-    --rancherk3s-worker-docker)
-        cgroup_to_bootfile
-        install_docker
-        # ufw_ports_allowed
-        k3s_worker_kubernetes
-        reboot_the_pi
-        ;;
-    --helm-master)
+    --helm|--helm-master)
         run_as_root
         install_helm_three
         ;;
     --openfaas-master)
+        run_as_root
         install_openfaas
-        test_openfaas
         ;;
     --arkade-master)
+        run_as_root
         install_arkade
         ;;
-    -h)
-        _help_menu
+    --clean)
+        run_as_root
+        k3s_uninstall
         ;;
-    --help)
+    -h|--help)
         _help_menu
         ;;
     *)
