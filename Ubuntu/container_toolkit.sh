@@ -40,6 +40,12 @@ function _help_menu() {
     echo '[*] --clean           Reset node Kubernetes/Docker state (destructive).'
     echo '                      sudo bash container_toolkit.sh --clean'
     echo ''
+    echo '[*] --repair-calico   Re-apply Calico on an existing cluster (run on master).'
+    echo '                      sudo bash container_toolkit.sh --repair-calico'
+    echo ''
+    echo '[*] --restart-cni     Restart containerd + kubelet (run on each NotReady node).'
+    echo '                      sudo bash container_toolkit.sh --restart-cni'
+    echo ''
     echo "Environment overrides: K8S_MINOR=${K8S_MINOR} CALICO_VERSION=${CALICO_VERSION} POD_NETWORK_CIDR=${POD_NETWORK_CIDR}"
     exit 0
 }
@@ -202,30 +208,126 @@ function allow_master_scheduling() {
         || true
 }
 
+function write_calico_custom_resources() {
+    local dest="$1"
+    tee "${dest}" >/dev/null <<EOF
+# Minimal Calico operator install (Installation + APIServer only).
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+      - blockSize: 26
+        cidr: ${POD_NETWORK_CIDR}
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}
+EOF
+}
+
+function wait_for_tigera_operator_crds() {
+    local i crd
+    echo '[*] Waiting for tigera-operator to install operator.tigera.io CRDs...'
+    kubectl wait --for=condition=Available deployment/tigera-operator -n tigera-operator --timeout=300s
+
+    for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
+        for i in $(seq 1 60); do
+            if kubectl get crd "${crd}" >/dev/null 2>&1 \
+                && kubectl wait --for=condition=Established "crd/${crd}" --timeout=10s >/dev/null 2>&1; then
+                echo "[*] CRD ready: ${crd}"
+                break
+            fi
+            if [[ ${i} -eq 60 ]]; then
+                echo "[*] Error: timed out waiting for CRD ${crd}"
+                echo '    Check: kubectl logs -n tigera-operator deploy/tigera-operator'
+                exit 1
+            fi
+            sleep 5
+        done
+    done
+}
+
 function install_calico_network_policy() {
     local workdir
     workdir=$(mktemp -d)
+    export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
 
-    echo "[*] Installing Calico ${CALICO_VERSION}."
+    echo "[*] Installing Calico ${CALICO_VERSION} (Tigera operator)."
+
+    echo '[*] Applying projectcalico.org CRDs.'
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml" \
+        -o "${workdir}/v1_crd_projectcalico_org.yaml"
+    kubectl apply --server-side --force-conflicts -f "${workdir}/v1_crd_projectcalico_org.yaml"
+
+    echo '[*] Deploying tigera-operator (it will create operator.tigera.io CRDs).'
     curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
         -o "${workdir}/tigera-operator.yaml"
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
-        -o "${workdir}/custom-resources.yaml"
-
-    # Calico default pool is 192.168.0.0/16; keep it aligned with kubeadm --pod-network-cidr.
-    if [[ "${POD_NETWORK_CIDR}" != "192.168.0.0/16" ]]; then
-        sed -i "s|cidr: 192.168.0.0/16|cidr: ${POD_NETWORK_CIDR}|" "${workdir}/custom-resources.yaml"
-    fi
-
     kubectl apply -f "${workdir}/tigera-operator.yaml"
+
+    wait_for_tigera_operator_crds
+
+    echo '[*] Applying Calico Installation + APIServer custom resources.'
+    write_calico_custom_resources "${workdir}/custom-resources.yaml"
     kubectl apply -f "${workdir}/custom-resources.yaml"
 
-    echo '[*] Waiting for Calico pods to become ready (up to 10 minutes).'
-    kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n calico-system --timeout=600s 2>/dev/null \
-        || kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=600s 2>/dev/null \
-        || echo '[*] Warning: timed out waiting for calico-node; check: kubectl get pods -A'
+    wait_for_calico_ready
+    restart_local_cni_services
     rm -rf "${workdir}"
 }
+
+function wait_for_calico_ready() {
+    local i
+    echo '[*] Waiting for Calico operator to report Available (up to 10 minutes).'
+    for i in $(seq 1 60); do
+        if kubectl get tigerastatus calico -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null | grep -q True; then
+            echo '[*] Calico tigerastatus is Available.'
+            break
+        fi
+        if [[ ${i} -eq 60 ]]; then
+            echo '[*] Warning: Calico tigerastatus not Available yet.'
+            echo '    Check: kubectl get tigerastatus'
+            echo '    Check: kubectl describe installation default'
+            echo '    Check: kubectl logs -n tigera-operator deploy/tigera-operator'
+        fi
+        sleep 10
+    done
+
+    echo '[*] Waiting for calico-node pods (up to 10 minutes).'
+    kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n calico-system --timeout=600s 2>/dev/null \
+        || kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=600s 2>/dev/null \
+        || echo '[*] Warning: calico-node not Ready yet; check: kubectl get pods -A'
+}
+
+function restart_local_cni_services() {
+    echo '[*] Restarting containerd and kubelet so CNI config is picked up.'
+    systemctl restart containerd
+    systemctl restart kubelet
+}
+
+function repair_calico() {
+    export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
+    if ! kubectl cluster-info >/dev/null 2>&1; then
+        echo '[*] Cannot reach cluster API. Set KUBECONFIG or run on the control plane.'
+        exit 1
+    fi
+    install_calico_network_policy
+    allow_master_scheduling
+    set_felix_loose_true
+    echo ''
+    echo '[*] Run on EACH worker that is still NotReady:'
+    echo '    sudo bash container_toolkit.sh --restart-cni'
+    echo ''
+    echo '[*] Then verify: kubectl get nodes && kubectl get pods -A'
+}
+
 
 function set_felix_loose_true() {
     echo '[*] Setting FELIX_IGNORELOOSERPF on calico-node (if present).'
@@ -322,6 +424,14 @@ case "$1" in
     --clean)
         _run_as_root
         cleanup_workers
+        ;;
+    --repair-calico)
+        _run_as_root
+        repair_calico
+        ;;
+    --restart-cni)
+        _run_as_root
+        restart_local_cni_services
         ;;
     -h|--help)
         _help_menu
