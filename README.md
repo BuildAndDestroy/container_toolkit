@@ -1,196 +1,289 @@
-Automate the install of Kubernetes and Docker.
-Calico networking is here to stay.
+# container_toolkit
 
+Scripts and manifests to stand up Kubernetes clusters on **Ubuntu servers** and **Raspberry Pi 4** boards. Both installers use **Calico** for pod networking (`192.168.0.0/16`) and configure the control-plane node to **run workloads**, not just the API.
 
-# Help Menu Ubuntu 22.04
+## Choose your platform
 
+| | Ubuntu | Raspberry Pi 4 |
+|---|--------|----------------|
+| **Script** | [`Ubuntu/container_toolkit.sh`](Ubuntu/container_toolkit.sh) | [`raspberry_pi/rpi_container_toolkit.sh`](raspberry_pi/rpi_container_toolkit.sh) |
+| **Stack** | kubeadm + containerd + Calico | k3s + Calico |
+| **OS** | Ubuntu 22.04 / 24.04 LTS (64-bit) | Raspberry Pi OS Lite **64-bit** |
+| **Master flag** | `--master-calico` | `--master-k3s` |
+| **Worker flag** | `--worker-node` then `kubeadm join` | `--worker-k3s --server … --token …` |
+| **Kubeconfig** | `~/.kube/config` | `/etc/rancher/k3s/k3s.yaml` |
 
-```
-./container_toolkit.sh -h
-[*] Help Menu:
+## Quick start
 
-[*] --master-calico   Install Kubernetes MASTER NODE Calico and Docker.
-                      ./container_toolkit.sh --master-calico
+### Ubuntu (kubeadm)
 
-[*] --worker-node     Install Kubernetes WORKER NODE and Docker
-                      ./container_toolkit.sh --worker-node
+```bash
+git clone <this-repo>
+cd container_toolkit/Ubuntu
+sudo bash container_toolkit.sh --master-calico
+# Save the printed kubeadm join command
 
-[*] --docker     Install ONLY Docker.
-                 ./container_toolkit.sh --docker
-
-[*] --rancher    Install a ONLY Rancher constainer.
-                 ./container_toolkit.sh --rancher
-
-[*] --helm       Apply this option to install helm.
-                 ./container_toolkit.sh --helm
-
-[*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.
-                 ./container_toolkit.sh --clean
-```
-
-
-# Deploy Kubernetes Master With The Calico Network:
-
-* Run on a Ubuntu 22.04 hosts or VM that you want dedicated as Master
-
-```./container_toolkit.sh --master-calico```
-
-* Once done, check your pods:
-
-```
-kubectl get pods --all-namespaces
-
-NAMESPACE     NAME                                      READY   STATUS    RESTARTS   AGE
-kube-system   calico-kube-controllers-7b9dcdcc5-dsm52   1/1     Running   0          74s
-kube-system   calico-node-q9g9f                         1/1     Running   0          75s
-kube-system   coredns-5644d7b6d9-k5z7x                  1/1     Running   0          75s
-kube-system   coredns-5644d7b6d9-q2464                  1/1     Running   0          75s
-kube-system   etcd-container-host                       1/1     Running   0          15s
-kube-system   kube-apiserver-container-host             1/1     Running   0          23s
-kube-system   kube-controller-manager-container-host    1/1     Running   0          17s
-kube-system   kube-proxy-z4fqq                          1/1     Running   0          75s
-kube-system   kube-scheduler-container-host             1/1     Running   0          19s
+# On each worker:
+sudo bash container_toolkit.sh --worker-node
+sudo kubeadm join ...   # paste command from master
 ```
 
+### Raspberry Pi (k3s, 3-node example)
 
-# Deploy Kubernetes Workers:
+```bash
+cd container_toolkit/raspberry_pi
+# On pi-master (reboot if script asks for cgroup boot params, then re-run):
+sudo bash rpi_container_toolkit.sh --master-k3s
 
-* Run on a Ubunutu 22.04 hosts or VM that you want dedicated as a Worker
-
-```./container_toolkit.sh --worker-node```
-
-* Obtain your secret from master and add to each worker node.
-* You can verify all is working by running on Master:
-
-```
-kubectl get nodes
-NAME             STATUS   ROLES    AGE     VERSION
-container-host   Ready    master   5m57s   v1.16.2
-k8-node1         Ready    <none>   2m58s   v1.16.2
-k8-node2         Ready    <none>   2m55s   v1.16.2
-k8-node3         Ready    <none>   2m55s   v1.16.2
+# On pi-worker1 and pi-worker2:
+sudo bash rpi_container_toolkit.sh --worker-k3s --server 192.168.1.10 --token '<from master>'
 ```
 
-# Side note
-We have found Ubuntu 22.04 doesn't always disable swap after a reboot. You most likely will need to ssh into the nodes and disable swap, then restart kubernetes to get the services working:
-```
-sudo /sbin/swapoff -av
-sudo systemctl restart kubelet.service
+Verify on the control plane:
+
+```bash
+# Ubuntu
+kubectl get nodes -o wide && kubectl get pods -A
+
+# Raspberry Pi
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+kubectl get nodes -o wide && kubectl get pods -A
 ```
 
+## Defaults (both platforms)
 
-## Install Dockerfile
+| Setting | Ubuntu | Raspberry Pi |
+|---------|--------|----------------|
+| Kubernetes | `v1.32` via [pkgs.k8s.io](https://pkgs.k8s.io) | k3s latest from [get.k3s.io](https://get.k3s.io) |
+| Calico | `v3.31.2` | `v3.31.2` |
+| Pod CIDR | `192.168.0.0/16` | `192.168.0.0/16` (`cluster-cidr`) |
+
+Override examples:
+
+```bash
+# Ubuntu
+sudo K8S_MINOR=v1.32 CALICO_VERSION=v3.31.2 bash container_toolkit.sh --master-calico
+
+# Raspberry Pi
+sudo K3S_VERSION=v1.31.5+k3s1 CALICO_VERSION=v3.31.2 bash rpi_container_toolkit.sh --master-k3s
 ```
+
+## Repository layout
+
+| Path | Description |
+|------|-------------|
+| `Ubuntu/container_toolkit.sh` | kubeadm cluster installer |
+| `raspberry_pi/rpi_container_toolkit.sh` | k3s cluster installer |
+| `raspberry_pi/secure_pi.sh` | Optional Pi hardening (SSH, firewall, etc.) |
+| `cert-manager/` | ClusterIssuer manifests for TLS |
+| `metallb/` | MetalLB L2 config and sample service |
+| `traefik/` | Traefik notes |
+| `docker-registry/` | In-cluster registry deployment |
+| `prometheus_grafana/` | Monitoring stack notes |
+| `user_administration/` | User auth helper scripts |
+
+---
+
+# Ubuntu — `container_toolkit.sh`
+
+Run as **root** (`sudo`). Calico networking is installed via the Tigera operator.
+
+```bash
+cd Ubuntu
+sudo bash container_toolkit.sh --help
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--master-calico` | Control plane + Calico; schedules pods on this node |
+| `--worker-node` | Install prerequisites; join with `kubeadm join` from master |
+| `--docker` | Install Docker only |
+| `--rancher` | Run Rancher in Docker (standalone) |
+| `--helm` | Install Helm 3 |
+| `--clean` | Reset Kubernetes/container state (destructive) |
+
+### Control plane
+
+```bash
+sudo bash container_toolkit.sh --master-calico
+```
+
+When finished, the script prints a **`kubeadm join ...`** command for workers.
+
+```bash
+kubectl get nodes -o wide
+kubectl get pods -A
+```
+
+Example:
+
+```
+NAME         STATUS   ROLES           AGE   VERSION
+k8s-master   Ready    control-plane   10m   v1.32.x
+```
+
+### Workers
+
+On each worker host:
+
+```bash
+sudo bash container_toolkit.sh --worker-node
+```
+
+On the master (if you need a new join command):
+
+```bash
+kubeadm token create --print-join-command
+```
+
+Run the full join output on each worker as root.
+
+```
+NAME          STATUS   ROLES           AGE   VERSION
+k8s-master    Ready    control-plane   15m   v1.32.x
+k8-worker-1   Ready    <none>          5m    v1.32.x
+k8-worker-2   Ready    <none>          5m    v1.32.x
+```
+
+### Helm (optional)
+
+```bash
+sudo bash container_toolkit.sh --helm
+```
+
+### Reset a node
+
+```bash
+sudo bash container_toolkit.sh --clean
+```
+
+### Swap after reboot
+
+Ubuntu sometimes re-enables swap after reboot. If nodes are `NotReady`:
+
+```bash
+sudo swapoff -a
+sudo systemctl restart kubelet
+```
+
+### Docker image (help only)
+
+```bash
 docker build -t container_toolkit .
 docker run --rm -it container_toolkit /opt/container_toolkit/Ubuntu/container_toolkit.sh -h
 ```
 
+---
 
-# Help Menu - Raspberry Pi
+# Raspberry Pi — `rpi_container_toolkit.sh`
 
-```
-bash rpi_container_toolkit.sh 
-[*] Help Menu:
+Use **k3s** on real hardware (not [k3d](https://k3d.io), which runs k3s inside Docker on a desktop). Recommended: **3× Pi 4** with **8 GB** RAM and **64-bit** Raspberry Pi OS Lite.
 
-[*] --rancherk3s-master    The generic k3s install for Master.
-                             bash rpi_container_toolkit.sh --rancherk3s-master
-
-[*] --rancherk3s-worker    The generic k3s install for Worker.
-                             bash rpi_container_toolkit.sh --rancherk3s-worker
-
-
-    ###### FOR THE DOCKER USERS - use below options to install Docker instead of containerd ######
-
-
-[*] --rancherk3s-master-docker    K3s install for Master but with Docker instead of containerd.
-                                    bash rpi_container_toolkit.sh --rancherk3s-master-docker
-
-[*] --rancherk3s-worker-docker    K3s install for Worker but with Docker instead of containerd.
-                                    bash rpi_container_toolkit.sh --rancherk3s-worker-docker
-
-
-       >>> Use below to install frameworks known to work on k3s.
-
-[*] --helm-master          Install Helm3 to Master
-                               bash rpi_container_toolkit.sh --helm
-
-[*] --openfaas-master      Install on master - openfaas repo and cli tools.
-                               bash rpi_container_toolkit.sh --openfaas-master
-
-[*] --arkade-master         Install on master - arkade repo and cli tools.
-                               bash rpi_container_toolkit.sh --arkade-master
+```bash
+cd raspberry_pi
+sudo bash rpi_container_toolkit.sh --help
 ```
 
-* Check your nodes
+### Flags
 
-```
-kubectl get nodes
-NAME         STATUS   ROLES    AGE   VERSION
-pi-master    Ready    master   37m   v1.18.2+k3s1
-pi-worker1   Ready    <none>   27m   v1.18.2+k3s1
-pi-worker2   Ready    <none>   25m   v1.18.2+k3s1
-```
+| Flag | Description |
+|------|-------------|
+| `--master-k3s` | k3s server + Calico; runs workloads on this node |
+| `--worker-k3s` | Join as agent (`--server` + `--token`, or env vars) |
+| `--master-k3s-docker` / `--worker-k3s-docker` | Use Docker as the runtime |
+| `--helm` | Install Helm 3 |
+| `--openfaas-master` | Optional OpenFaaS |
+| `--arkade-master` | Optional arkade CLI |
+| `--clean` | Uninstall k3s (destructive) |
 
-* Check your pods:
-```
-kubectl get pods --all-namespaces
-NAMESPACE     NAME                                     READY   STATUS      RESTARTS   AGE
-kube-system   helm-install-traefik-b5mzb               0/1     Completed   2          37m
-kube-system   metrics-server-7566d596c8-5nqdn          1/1     Running     1          37m
-kube-system   local-path-provisioner-6d59f47c7-blj9l   1/1     Running     1          37m
-kube-system   svclb-traefik-kxhxw                      2/2     Running     2          36m
-kube-system   traefik-758cd5fc85-shcm2                 1/1     Running     1          36m
-kube-system   coredns-8655855d6-xh8p9                  1/1     Running     1          37m
-kube-system   svclb-traefik-ftjzq                      2/2     Running     2          27m
-kube-system   svclb-traefik-59p4l                      2/2     Running     0          25m
-openfaas      nats-b988ccbfd-5zddw                     1/1     Running     0          22m
-openfaas      queue-worker-5ffdf7b57-zssj6             1/1     Running     1          22m
-openfaas      alertmanager-65fd77874c-xrmxx            1/1     Running     0          22m
-openfaas      prometheus-9c9c8447b-dwnfz               1/1     Running     0          22m
-openfaas      gateway-76fd4f4cf8-thdhb                 2/2     Running     0          22m
-openfaas-fn   certinfo-68f7b4f848-db8nq                1/1     Running     0          21m
-openfaas-fn   figlet-54647f7fc6-r789k                  1/1     Running     0          21m
-openfaas-fn   nodeinfo-768577f7b5-6fg7x                1/1     Running     0          21m
-openfaas      faas-idler-7579b574df-bzj66              1/1     Running     3          22m
-```
+Legacy aliases: `--rancherk3s-master`, `--rancherk3s-worker`, `--rancherk3s-*-docker`.
 
-## Test openfaas
+### Three-node layout (example)
 
-* figlet
-```
-echo 'Got eem' | faas-cli invoke figlet --gateway http://127.0.0.1:31112
-  ____       _                         
- / ___| ___ | |_    ___  ___ _ __ ___  
-| |  _ / _ \| __|  / _ \/ _ \ '_ ` _ \ 
-| |_| | (_) | |_  |  __/  __/ | | | | |
- \____|\___/ \__|  \___|\___|_| |_| |_|
-                                       
+| Node | Role | Example IP |
+|------|------|------------|
+| `pi-master` | k3s server | `192.168.1.10` |
+| `pi-worker1` | k3s agent | `192.168.1.11` |
+| `pi-worker2` | k3s agent | `192.168.1.12` |
+
+Use static IPs or DHCP reservations.
+
+### 1. Prepare each Pi
+
+1. Flash **64-bit** Raspberry Pi OS Lite; enable SSH.
+2. Set hostnames (`pi-master`, `pi-worker1`, `pi-worker2`).
+3. Optional: `sudo bash secure_pi.sh --raspbian`
+4. First install may require a **reboot** after cgroup boot params are added to `cmdline.txt`; re-run the script after reboot.
+
+### 2. Control plane (`pi-master`)
+
+```bash
+sudo bash rpi_container_toolkit.sh --master-k3s
 ```
 
-* certinfo
-```
-curl http://127.0.0.1:31112/function/certinfo -d "google.com"
-Host 172.217.1.206
-Port 443
-Issuer GTS CA 1O1
-CommonName *.google.com
-NotBefore 2020-04-28 07:43:41 +0000 UTC
-NotAfter 2020-07-21 07:43:41 +0000 UTC
-SANs [*.google.com *.android.com *.appengine.google.com *.bdn.dev *.cloud.google.com *.crowdsource.google.com *.g.co *.gcp.gvt2.com *.gcpcdn.gvt1.com *.ggpht.cn *.gkecnapps.cn *.google-analytics.com *.google.ca *.google.cl *.google.co.in *.google.co.jp *.google.co.uk *.google.com.ar *.google.com.au *.google.com.br *.google.com.co *.google.com.mx *.google.com.tr *.google.com.vn *.google.de *.google.es *.google.fr *.google.hu *.google.it *.google.nl *.google.pl *.google.pt *.googleadapis.com *.googleapis.cn *.googlecnapps.cn *.googlecommerce.com *.googlevideo.com *.gstatic.cn *.gstatic.com *.gstaticcnapps.cn *.gvt1.com *.gvt2.com *.metric.gstatic.com *.urchin.com *.url.google.com *.wear.gkecnapps.cn *.youtube-nocookie.com *.youtube.com *.youtubeeducation.com *.youtubekids.com *.yt.be *.ytimg.com android.clients.google.com android.com developer.android.google.cn developers.android.google.cn g.co ggpht.cn gkecnapps.cn goo.gl google-analytics.com google.com googlecnapps.cn googlecommerce.com source.android.google.cn urchin.com www.goo.gl youtu.be youtube.com youtubeeducation.com youtubekids.com yt.be]
+The script disables swap, installs k3s with Flannel off, applies Calico, and prints a worker join command.
+
+```bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+kubectl get nodes -o wide
+kubectl get pods -A
 ```
 
-* nodeinfo
-```
-echo -n verbose | faas-cli invoke nodeinfo --gateway 127.0.0.1:31112
-Hostname: nodeinfo-768577f7b5-6fg7x
+### 3. Workers
 
-Arch: arm
-CPUs: 4
-Total mem: 3823MB
-Platform: linux
-Uptime: 1721
-[
-  {
-..
-..
+```bash
+sudo bash rpi_container_toolkit.sh --worker-k3s \
+  --server 192.168.1.10 \
+  --token 'K10...::server:...'
 ```
+
+Or:
+
+```bash
+export K3S_SERVER_URL=https://192.168.1.10:6443
+export K3S_TOKEN='K10...::server:...'
+sudo -E bash rpi_container_toolkit.sh --worker-k3s
+```
+
+Token on master: `/var/lib/rancher/k3s/server/node-token`
+
+```
+NAME         STATUS   ROLES                  AGE   VERSION
+pi-master    Ready    control-plane,master   15m   v1.31.x+k3s1
+pi-worker1   Ready    <none>                 5m    v1.31.x+k3s1
+pi-worker2   Ready    <none>                 5m    v1.31.x+k3s1
+```
+
+### Optional add-ons (master)
+
+```bash
+sudo bash rpi_container_toolkit.sh --helm
+sudo bash rpi_container_toolkit.sh --openfaas-master
+sudo bash rpi_container_toolkit.sh --arkade-master
+```
+
+### Reset a Pi
+
+```bash
+sudo bash rpi_container_toolkit.sh --clean
+```
+
+### Pi notes
+
+- **Reboot:** Script exits with instructions when cgroup lines are added; it does not force reboot.
+- **Memory:** Calico on three Pi 4 nodes is fine; be cautious running heavy workloads on 4 GB boards.
+- **Traefik:** Disabled by default (`--disable=traefik`); add your own ingress if needed.
+- **Sample manifests:** `raspberry_pi/example_yaml_deployment.yaml`, `raspberry_pi/traefik.yaml`
+
+---
+
+## After the cluster is up
+
+Install add-ons from this repo as needed:
+
+- TLS: `cert-manager/README.md`
+- LoadBalancer (on-prem): `metallb/`
+- Registry: `docker-registry/README.md`
+- Monitoring: `prometheus_grafana/README.md`

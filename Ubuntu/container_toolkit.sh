@@ -1,263 +1,311 @@
 #!/bin/bash
+#
+# Ubuntu kubeadm + containerd + Calico installer.
+# Run as root on each node; use --master-calico on the control plane and
+# --worker-node on additional nodes, then join workers with the printed command.
+#
 
-# https://linuxconfig.org/how-to-install-kubernetes-on-ubuntu-20-04-focal-fossa-linux
+set -o pipefail
 
-#########################################################################
-#                  Automate the container install process.              #
-#                                                                       #
-#                 Install Kubernetes, Docker, and Rancher               #
-#########################################################################
+K8S_MINOR="${K8S_MINOR:-v1.32}"
+CALICO_VERSION="${CALICO_VERSION:-v3.31.2}"
+POD_NETWORK_CIDR="${POD_NETWORK_CIDR:-192.168.0.0/16}"
+CRI_SOCKET="${CRI_SOCKET:-unix:///var/run/containerd/containerd.sock}"
 
 function _run_as_root() {
-    # Run as root
     if [[ $(id -u) != 0 ]]; then
-        echo 'Must be ran as root.'
-        exit
+        echo '[*] Must be run as root (sudo bash container_toolkit.sh ...).'
+        exit 1
     fi
 }
 
 function _help_menu() {
-    # Help menu
     echo '[*] Help Menu:'
     echo ''
-    echo '[*] --master-calico   Install Kubernetes MASTER NODE Calico and Docker.'
-    echo '                      bash container_toolkit.sh --master-calico'
+    echo '[*] --master-calico   Control plane + Calico (schedules workloads on this node).'
+    echo '                      sudo bash container_toolkit.sh --master-calico'
     echo ''
-    echo '[*] --worker-node     Install Kubernetes WORKER NODE and Docker'
-    echo '                      bash container_toolkit.sh --worker-node'
+    echo '[*] --worker-node     Prepare a worker; join with the command printed on the master.'
+    echo '                      sudo bash container_toolkit.sh --worker-node'
     echo ''
-    echo '[*] --docker     Install ONLY Docker.'
-    echo '                 bash container_toolkit.sh --docker'
+    echo '[*] --docker          Install Docker only (get.docker.com).'
+    echo '                      sudo bash container_toolkit.sh --docker'
     echo ''
-    echo '[*] --rancher    Install a ONLY Rancher constainer.'
-    echo '                 bash container_toolkit.sh --rancher'
+    echo '[*] --rancher         Run Rancher in Docker (standalone, not in-cluster).'
+    echo '                      sudo bash container_toolkit.sh --rancher'
     echo ''
-    echo '[*] --helm       Apply this option to install helm.'
-    echo '                 bash container_toolkit.sh --helm'
+    echo '[*] --helm            Install Helm 3.'
+    echo '                      sudo bash container_toolkit.sh --helm'
     echo ''
-    echo '[*] --clean      Clean up Kubernetes WORKER NODES. Typically we should not need this.'
-    echo '                 bash container_toolkit.sh --clean'
+    echo '[*] --clean           Reset node Kubernetes/Docker state (destructive).'
+    echo '                      sudo bash container_toolkit.sh --clean'
     echo ''
-    exit
+    echo "Environment overrides: K8S_MINOR=${K8S_MINOR} CALICO_VERSION=${CALICO_VERSION} POD_NETWORK_CIDR=${POD_NETWORK_CIDR}"
+    exit 0
 }
 
-
 function cleanup_docker() {
-    # Cleanup any currently installed docker package.
-    echo '[*] Removing old Docker packages.'
-    sudo apt remove docker docker-engine docker.io containerd runc -y
+    echo '[*] Removing conflicting Docker/containerd packages.'
+    apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
 }
 
 function install_dependencies() {
-    # Setup packages for docker.
-    echo '[*] Installing packages to support Docker.'
-    sudo apt update -y
-    sudo apt install apt-transport-https ca-certificates curl gnupg gnupg2 software-properties-common nfs-common -y
+    echo '[*] Installing base packages.'
+    apt-get update -y
+    apt-get install -y apt-transport-https ca-certificates curl gnupg software-properties-common nfs-common ethtool
 }
 
-function docker_install_script(){
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh ./get-docker.sh --dry-run
+function docker_install_script() {
+    echo '[*] Installing Docker via get.docker.com.'
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh
+    rm -f /tmp/get-docker.sh
 }
 
 function set_hostname() {
-    echo "$(ip a | grep enp -A1 | grep inet | awk '{print $2}' | sed 's/\/24//g')" "$(hostnamectl --static)" >> /etc/hosts
+    local node_ip
+    node_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [[ -z "${node_ip}" ]]; then
+        node_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    fi
+    if [[ -n "${node_ip}" ]]; then
+        local hostname_short
+        hostname_short=$(hostnamectl --static 2>/dev/null || hostname -s)
+        if ! grep -qE "[[:space:]]${hostname_short}([[:space:]]|$)" /etc/hosts; then
+            echo "${node_ip} ${hostname_short}" >> /etc/hosts
+        fi
+        echo "[*] /etc/hosts: ${node_ip} ${hostname_short}"
+    else
+        echo '[*] Warning: could not detect node IP for /etc/hosts.'
+    fi
 }
 
 function disable_swap() {
-    # Disable swap and comment out from /etc/fstab
-    echo '[*] Disabling SWAP and commenting out fstab.'
-    /sbin/swapoff -av
-    edit_swap=$(cat /etc/fstab | awk '{print $1}' | grep swap)
-    sed -i "s|$edit_swap|#$edit_swap|g" /etc/fstab
-    cat /etc/fstab | grep swap
+    echo '[*] Disabling swap (required for kubelet).'
+    swapoff -a 2>/dev/null || true
+    sed -i.bak-k8s '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
+    # Prevent cloud images from re-enabling swap on boot (common on Ubuntu 22.04+).
+    if [[ -f /etc/cloud/cloud.cfg ]]; then
+        sed -i.bak-k8s 's/^\([[:space:]]*- swap\)/#\1/' /etc/cloud/cloud.cfg 2>/dev/null || true
+    fi
 }
 
 function load_kernel_modules() {
-    sudo tee /etc/modules-load.d/containerd.conf <<EOF
+    tee /etc/modules-load.d/kubernetes.conf >/dev/null <<EOF
 overlay
 br_netfilter
 EOF
-    sudo modprobe overlay
-    sudo modprobe br_netfilter
+    modprobe overlay 2>/dev/null || true
+    modprobe br_netfilter 2>/dev/null || true
 }
 
 function update_bridge() {
-    sudo tee /etc/sysctl.d/kubernetes.conf <<EOF
+    tee /etc/sysctl.d/kubernetes.conf >/dev/null <<EOF
 net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
 net.ipv4.ip_forward = 1
 EOF
-    sudo sysctl --system
+    sysctl --system >/dev/null
 }
 
-function enable_docker_repo(){
-    sudo install -m 0755 -d /etc/apt/keyrings
-    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/keyrings/docker.gpg
-    sudo chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt-get update -y
+function enable_containerd_repo() {
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" \
+        | tee /etc/apt/sources.list.d/docker.list >/dev/null
+    apt-get update -y
 }
 
-function install_docker_packages(){
-    sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-    sudo docker run hello-world
+function install_containerd_package() {
+    echo '[*] Installing containerd.'
+    apt-get install -y containerd.io
 }
 
-function install_containerd(){
-    sudo apt update -y
-    sudo apt install -y containerd.io
+function configure_containerd() {
+    echo '[*] Configuring containerd (systemd cgroups + Kubernetes pause image).'
+    mkdir -p /etc/containerd
+    containerd config default | tee /etc/containerd/config.toml >/dev/null
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    local pause_image
+    pause_image=$(kubeadm config images list 2>/dev/null | grep pause | head -n1 || true)
+    if [[ -n "${pause_image}" ]]; then
+        sed -i "s|sandbox_image = \".*\"|sandbox_image = \"${pause_image}\"|" /etc/containerd/config.toml
+    fi
 }
 
-function containerd_use_systemd(){
-    containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
-    sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml
+function restart_enable_containerd() {
+    systemctl restart containerd
+    systemctl enable containerd
 }
 
-function restart_enable_containerd(){
-    sudo systemctl restart containerd
-    sudo systemctl enable containerd
+function add_kubernetes_repo() {
+    echo "[*] Adding Kubernetes apt repo (${K8S_MINOR})."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://pkgs.k8s.io/core:/stable:/${K8S_MINOR}/deb/Release.key" \
+        | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${K8S_MINOR}/deb/ /" \
+        | tee /etc/apt/sources.list.d/kubernetes.list
+    chmod 644 /etc/apt/sources.list.d/kubernetes.list
 }
 
-function add_kubernetes_repo(){
-    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-    sudo chmod 644 /etc/apt/sources.list.d/kubernetes.list
+function install_kube_commands() {
+    apt-get update -y
+    apt-get install -y kubelet kubeadm kubectl
+    apt-mark hold kubelet kubeadm kubectl
 }
 
-function install_kube_commands(){
-    sudo apt update -y
-    sudo apt install -y kubelet kubeadm kubectl
-    sudo apt-mark hold kubelet kubeadm kubectl
+function restart_kubelet_services() {
+    systemctl restart kubelet
+    systemctl enable kubelet
 }
 
-function restart_kubelet_services(){
-    sudo systemctl restart kubelet.service
-    sudo systemctl enable kubelet.service
+function init_kubernetes_images() {
+    echo '[*] Pre-pulling Kubernetes images.'
+    kubeadm config images pull --cri-socket="${CRI_SOCKET}"
 }
 
-function init_kubernetes_images(){
-    sudo kubeadm config images pull
+function prepare_node_common() {
+    cleanup_docker
+    install_dependencies
+    set_hostname
+    disable_swap
+    load_kernel_modules
+    update_bridge
+    enable_containerd_repo
+    install_containerd_package
+    add_kubernetes_repo
+    install_kube_commands
+    configure_containerd
+    restart_enable_containerd
+    restart_kubelet_services
+    init_kubernetes_images
 }
 
 function api_server_master_calico() {
-    # Beginning of Master node setup.
-    echo '[*] Starting Master node.'
-    #kubeadm init --pod-network-cidr=192.168.0.0/16
-    kubeadm init --pod-network-cidr=10.96.0.0/16
-    mkdir -p $HOME/.kube
-    sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+    echo "[*] Initializing control plane (pod CIDR ${POD_NETWORK_CIDR})."
+    kubeadm init \
+        --pod-network-cidr="${POD_NETWORK_CIDR}" \
+        --cri-socket="${CRI_SOCKET}"
+
+    mkdir -p "${HOME}/.kube"
+    cp -i /etc/kubernetes/admin.conf "${HOME}/.kube/config"
+    chown "$(id -u):$(id -g)" "${HOME}/.kube/config"
+    export KUBECONFIG="${HOME}/.kube/config"
+}
+
+function allow_master_scheduling() {
+    echo '[*] Allowing workloads on the control-plane node.'
+    kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule- 2>/dev/null \
+        || kubectl taint nodes --all node-role.kubernetes.io/master:NoSchedule- 2>/dev/null \
+        || true
 }
 
 function install_calico_network_policy() {
-    # Install the calico pod network.
-    #curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml -O
-    #sed -i -e "s?192.168.0.0?10.96.0.0?g" calico.yaml
-    #kubectl apply -f calico.yaml
-    #echo '[*] Check pods with "kubectl get pods --all-namespaces". Once done, install --helm.'
-    #kubectl get pods --all-namespaces
-    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/tigera-operator.yaml -O
-    curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/custom-resources.yaml -O
-    kubectl create -f tigera-operator.yaml
-    sed -i 's/cidr: 192\.168\.0\.0\/16/cidr: 10.96.0.0\/16/g' custom-resources.yaml
-    kubectl create -f custom-resources.yaml
-}
+    local workdir
+    workdir=$(mktemp -d)
 
-function install_calicoctl() {
-    echo '[*] Installing calicoctl as a pod'
-    # etcd:
-    #kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/calicoctl-etcd.yaml
-    # K8s API datastore:
-    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.3/manifests/calicoctl.yaml
-    kubectl exec -ti -n kube-system calicoctl -- /calicoctl get profiles -o wide
+    echo "[*] Installing Calico ${CALICO_VERSION}."
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
+        -o "${workdir}/tigera-operator.yaml"
+    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/custom-resources.yaml" \
+        -o "${workdir}/custom-resources.yaml"
+
+    # Calico default pool is 192.168.0.0/16; keep it aligned with kubeadm --pod-network-cidr.
+    if [[ "${POD_NETWORK_CIDR}" != "192.168.0.0/16" ]]; then
+        sed -i "s|cidr: 192.168.0.0/16|cidr: ${POD_NETWORK_CIDR}|" "${workdir}/custom-resources.yaml"
+    fi
+
+    kubectl apply -f "${workdir}/tigera-operator.yaml"
+    kubectl apply -f "${workdir}/custom-resources.yaml"
+
+    echo '[*] Waiting for Calico pods to become ready (up to 10 minutes).'
+    kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n calico-system --timeout=600s 2>/dev/null \
+        || kubectl wait --for=condition=Ready pods -l k8s-app=calico-node -n kube-system --timeout=600s 2>/dev/null \
+        || echo '[*] Warning: timed out waiting for calico-node; check: kubectl get pods -A'
+    rm -rf "${workdir}"
 }
 
 function set_felix_loose_true() {
-    echo '[*] Ignoring loose RPF for Felix.'
-    kubectl -n kube-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true
+    echo '[*] Setting FELIX_IGNORELOOSERPF on calico-node (if present).'
+    kubectl -n calico-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true 2>/dev/null \
+        || kubectl -n kube-system set env daemonset/calico-node FELIX_IGNORELOOSERPF=true 2>/dev/null \
+        || true
+}
+
+function print_join_instructions() {
+  echo ''
+  echo '================================================================================'
+  echo '[*] Control plane is up. On each worker node, run:'
+  echo ''
+  kubeadm token create --print-join-command 2>/dev/null || true
+  echo ''
+  echo '[*] Verify on this node:'
+  echo '    kubectl get nodes -o wide'
+  echo '    kubectl get pods -A'
+  echo '================================================================================'
+  echo ''
+}
+
+function print_worker_ready() {
+  echo ''
+  echo '================================================================================'
+  echo '[*] Worker prerequisites are installed.'
+  echo '    On the MASTER, run:  kubeadm token create --print-join-command'
+  echo '    Then run that full join command on THIS node as root.'
+  echo '================================================================================'
+  echo ''
 }
 
 function install_rancher() {
-    # Install Rancher on master kubernetes host.
-    sudo docker run --privileged -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher
+    echo '[*] Starting Rancher container (ports 80/443).'
+    docker run --privileged -d --restart=unless-stopped -p 80:80 -p 443:443 rancher/rancher
 }
 
 function cleanup_workers() {
-    # Cleanup workers for Rancher.
-    docker rm -f $(docker ps -qa)
-    docker volume rm $(docker volume ls -q)
-    cleanupdirs="/var/lib/etcd /etc/kubernetes /etc/cni /opt/cni /var/lib/cni /var/run/calico /opt/rke"
-    for dir in $cleanupdirs; do
-      echo "Removing $dir"
-      rm -rf $dir
+    echo '[*] Resetting Kubernetes and container runtime state.'
+    kubeadm reset -f 2>/dev/null || true
+    docker rm -f $(docker ps -qa) 2>/dev/null || true
+    docker volume rm $(docker volume ls -q) 2>/dev/null || true
+    local cleanupdirs="/var/lib/etcd /etc/kubernetes /etc/cni /opt/cni /var/lib/cni /var/run/calico /opt/rke"
+    for dir in ${cleanupdirs}; do
+        echo "Removing ${dir}"
+        rm -rf "${dir}"
     done
+    iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X 2>/dev/null || true
+    ipvsadm --clear 2>/dev/null || true
 }
 
-function install_helm_three(){
-    curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
-    sudo apt-get install apt-transport-https -y
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
-    sudo apt-get update -y
-    sudo apt-get install helm -y
+function install_helm_three() {
+    curl -fsSL https://baltocdn.com/helm/signing.asc | gpg --dearmor | tee /usr/share/keyrings/helm.gpg >/dev/null
+    apt-get install -y apt-transport-https
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" \
+        | tee /etc/apt/sources.list.d/helm-stable-debian.list
+    apt-get update -y
+    apt-get install -y helm
 }
-
-################################
-# ***Notes
-# Patch a Service to external Node port like so: (Good for on prem)
-#     kubectl patch service nginx-ingress-controller -p '{"spec":{"externalIPs":["192.168.1.101"]}}'
-# This will not be HA though
-
-############################
-# Functions to be executed #
-############################
-
 
 case "$1" in
     --docker)
         _run_as_root
         cleanup_docker
         install_dependencies
-	docker_install_script
+        docker_install_script
         ;;
     --master-calico)
         _run_as_root
-        cleanup_docker
-        install_dependencies
-	set_hostname
-	disable_swap
-	load_kernel_modules
-	update_bridge
-	enable_docker_repo
-	install_docker_packages
-	install_containerd
-	containerd_use_systemd
-	restart_enable_containerd
-	add_kubernetes_repo
-	install_kube_commands
-	restart_kubelet_services
-	init_kubernetes_images
-	api_server_master_calico
-	install_calico_network_policy
-	install_calicoctl
-	set_felix_loose_true
+        prepare_node_common
+        api_server_master_calico
+        install_calico_network_policy
+        allow_master_scheduling
+        set_felix_loose_true
+        print_join_instructions
         ;;
     --worker-node)
         _run_as_root
-        cleanup_docker
-        install_dependencies
-	set_hostname
-	disable_swap
-	load_kernel_modules
-	update_bridge
-	enable_docker_repo
-	install_docker_packages
-	install_containerd
-	containerd_use_systemd
-	restart_enable_containerd
-	add_kubernetes_repo
-	install_kube_commands
+        prepare_node_common
+        print_worker_ready
         ;;
     --helm)
         _run_as_root
@@ -268,19 +316,14 @@ case "$1" in
         cleanup_docker
         install_dependencies
         set_hostname
-	docker_install_script
+        docker_install_script
         install_rancher
         ;;
     --clean)
-        echo 'Needs Testing'
-        exit
         _run_as_root
         cleanup_workers
         ;;
-    -h)
-        _help_menu
-        ;;
-    --help)
+    -h|--help)
         _help_menu
         ;;
     *)
