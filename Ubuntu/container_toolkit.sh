@@ -255,6 +255,35 @@ function wait_for_tigera_operator_crds() {
     done
 }
 
+function calico_manifest_url() {
+    echo "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/$1"
+}
+
+function resolve_calico_crd_manifest() {
+    local url
+    url=$(calico_manifest_url "v1_crd_projectcalico_org.yaml")
+    if curl -fsI "${url}" >/dev/null 2>&1; then
+        echo "v1_crd_projectcalico_org.yaml"
+        return
+    fi
+    url=$(calico_manifest_url "operator-crds.yaml")
+    if curl -fsI "${url}" >/dev/null 2>&1; then
+        echo "operator-crds.yaml"
+        return
+    fi
+    echo "[*] Error: no Calico CRD manifest found for ${CALICO_VERSION}." >&2
+    echo '    Expected v1_crd_projectcalico_org.yaml (v3.32+) or operator-crds.yaml (v3.30–v3.31).' >&2
+    exit 1
+}
+
+function apply_calico_crds() {
+    local workdir="$1" crd_manifest
+    crd_manifest=$(resolve_calico_crd_manifest)
+    echo "[*] Applying Calico CRDs (${crd_manifest})."
+    curl -fsSL "$(calico_manifest_url "${crd_manifest}")" -o "${workdir}/${crd_manifest}"
+    kubectl apply --server-side --force-conflicts -f "${workdir}/${crd_manifest}"
+}
+
 function install_calico_network_policy() {
     local workdir
     workdir=$(mktemp -d)
@@ -262,13 +291,10 @@ function install_calico_network_policy() {
 
     echo "[*] Installing Calico ${CALICO_VERSION} (Tigera operator)."
 
-    echo '[*] Applying projectcalico.org CRDs.'
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml" \
-        -o "${workdir}/v1_crd_projectcalico_org.yaml"
-    kubectl apply --server-side --force-conflicts -f "${workdir}/v1_crd_projectcalico_org.yaml"
+    apply_calico_crds "${workdir}"
 
     echo '[*] Deploying tigera-operator (it will create operator.tigera.io CRDs).'
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
+    curl -fsSL "$(calico_manifest_url tigera-operator.yaml)" \
         -o "${workdir}/tigera-operator.yaml"
     kubectl apply -f "${workdir}/tigera-operator.yaml"
 

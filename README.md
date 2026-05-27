@@ -196,7 +196,7 @@ sudo bash rpi_container_toolkit.sh --help
 | `--helm` | Install Helm 3 |
 | `--openfaas-master` | Optional OpenFaaS |
 | `--arkade-master` | Optional arkade CLI |
-| `--clean` | Uninstall k3s (destructive) |
+| `--clean` / `--reset-k3s` | Complete k3s + Calico/CNI removal (`--yes` skips prompt) |
 
 Legacy aliases: `--rancherk3s-master`, `--rancherk3s-worker`, `--rancherk3s-*-docker`.
 
@@ -272,10 +272,16 @@ sudo bash rpi_container_toolkit.sh --openfaas-master
 sudo bash rpi_container_toolkit.sh --arkade-master
 ```
 
-### Reset a Pi
+### Reset a Pi (clean reinstall)
+
+Removes k3s, rancher data, CNI/Calico config, and leftover `cni0`/`veth` interfaces. Reboot before reinstalling.
 
 ```bash
 sudo bash rpi_container_toolkit.sh --clean
+# or non-interactive:
+sudo bash rpi_container_toolkit.sh --clean --yes
+sudo reboot
+sudo bash rpi_container_toolkit.sh --master-k3s
 ```
 
 ### Pi notes
