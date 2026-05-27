@@ -35,7 +35,11 @@ function _help_menu() {
     echo '[*] --helm             Install Helm 3 on this node.'
     echo '[*] --openfaas-master  Install OpenFaaS (optional, on master).'
     echo '[*] --arkade-master    Install arkade CLI (optional, on master).'
-    echo '[*] --clean            Remove k3s from this node (destructive).'
+    echo '[*] --clean            Complete k3s + Calico/CNI removal for a fresh install.'
+    echo '    --reset-k3s        Alias for --clean.'
+    echo '                      sudo bash rpi_container_toolkit.sh --clean'
+    echo '                      sudo bash rpi_container_toolkit.sh --clean --yes   # skip prompt'
+    echo '                      sudo reboot && sudo bash rpi_container_toolkit.sh --master-k3s'
     echo ''
     echo 'Legacy aliases: --rancherk3s-master, --rancherk3s-worker, --rancherk3s-*-docker'
     echo ''
@@ -224,6 +228,35 @@ spec: {}
 EOF
 }
 
+function calico_manifest_url() {
+    echo "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/$1"
+}
+
+function resolve_calico_crd_manifest() {
+    local url
+    url=$(calico_manifest_url "v1_crd_projectcalico_org.yaml")
+    if curl -fsI "${url}" >/dev/null 2>&1; then
+        echo "v1_crd_projectcalico_org.yaml"
+        return
+    fi
+    url=$(calico_manifest_url "operator-crds.yaml")
+    if curl -fsI "${url}" >/dev/null 2>&1; then
+        echo "operator-crds.yaml"
+        return
+    fi
+    echo "[*] Error: no Calico CRD manifest found for ${CALICO_VERSION}." >&2
+    echo '    Expected v1_crd_projectcalico_org.yaml (v3.32+) or operator-crds.yaml (v3.30–v3.31).' >&2
+    exit 1
+}
+
+function apply_calico_crds() {
+    local workdir="$1" crd_manifest
+    crd_manifest=$(resolve_calico_crd_manifest)
+    echo "[*] Applying Calico CRDs (${crd_manifest})."
+    curl -fsSL "$(calico_manifest_url "${crd_manifest}")" -o "${workdir}/${crd_manifest}"
+    kubectl apply --server-side --force-conflicts -f "${workdir}/${crd_manifest}"
+}
+
 function wait_for_tigera_operator_crds() {
     local i crd
     echo '[*] Waiting for tigera-operator to install operator.tigera.io CRDs...'
@@ -251,11 +284,9 @@ function install_calico() {
     export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
     echo "[*] Installing Calico ${CALICO_VERSION} for k3s."
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/v1_crd_projectcalico_org.yaml" \
-        -o "${workdir}/v1_crd_projectcalico_org.yaml"
-    kubectl apply --server-side --force-conflicts -f "${workdir}/v1_crd_projectcalico_org.yaml"
+    apply_calico_crds "${workdir}"
 
-    curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
+    curl -fsSL "$(calico_manifest_url tigera-operator.yaml)" \
         -o "${workdir}/tigera-operator.yaml"
     kubectl apply -f "${workdir}/tigera-operator.yaml"
 
@@ -310,13 +341,90 @@ function install_docker() {
 }
 
 function k3s_uninstall() {
-    echo '[*] Removing k3s from this node.'
+    echo '[*] Running official k3s uninstall scripts.'
     if [[ -x /usr/local/bin/k3s-uninstall.sh ]]; then
-        /usr/local/bin/k3s-uninstall.sh
+        /usr/local/bin/k3s-uninstall.sh || true
     fi
     if [[ -x /usr/local/bin/k3s-agent-uninstall.sh ]]; then
-        /usr/local/bin/k3s-agent-uninstall.sh
+        /usr/local/bin/k3s-agent-uninstall.sh || true
     fi
+}
+
+function cleanup_k3s_leftovers() {
+    local d
+    echo '[*] Removing leftover cluster and CNI data.'
+    for d in \
+        /etc/rancher \
+        /var/lib/rancher \
+        /var/lib/kubelet \
+        /var/lib/cni \
+        /var/lib/calico \
+        /run/k3s \
+        /run/flannel \
+        /run/k3s-containerd \
+        /var/run/k3s
+    do
+        if [[ -e "${d}" ]]; then
+            rm -rf "${d}"
+            echo "    removed ${d}"
+        fi
+    done
+
+    if [[ -d /etc/cni/net.d ]]; then
+        rm -rf /etc/cni/net.d/*
+        echo '    cleared /etc/cni/net.d/'
+    fi
+
+    if [[ -f /root/.kube/config ]]; then
+        rm -f /root/.kube/config
+        echo '    removed /root/.kube/config'
+    fi
+}
+
+function cleanup_k3s_network_interfaces() {
+    local iface
+    echo '[*] Removing leftover cluster network interfaces (if present).'
+    for iface in cni0 flannel.1 flannel-v6.1 flannel-wg flannel-wg-v6 kube-ipvs0; do
+        ip link delete "${iface}" 2>/dev/null || true
+    done
+    while read -r iface; do
+        [[ "${iface}" == veth* ]] || continue
+        ip link delete "${iface}" 2>/dev/null || true
+    done < <(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1)
+}
+
+function k3s_complete_cleanup() {
+    local skip_confirm="${1:-false}"
+
+    if [[ "${skip_confirm}" != "true" ]]; then
+        echo ''
+        echo '[*] COMPLETE k3s cleanup on this node (destructive)'
+        echo '    - Stops k3s / k3s-agent'
+        echo '    - Runs k3s-uninstall.sh (and agent uninstall if present)'
+        echo '    - Removes rancher, kubelet, CNI, and Calico leftovers'
+        echo '    - Removes cni0 / flannel / veth interfaces'
+        echo ''
+        echo '    Recommended before a clean --master-k3s or --worker-k3s install.'
+        echo ''
+        read -r -p '    Type yes to continue: ' confirm
+        if [[ "${confirm}" != "yes" ]]; then
+            echo '[*] Aborted.'
+            exit 0
+        fi
+    fi
+
+    echo '[*] Stopping k3s services.'
+    systemctl stop k3s k3s-agent 2>/dev/null || true
+
+    k3s_uninstall
+    cleanup_k3s_leftovers
+    cleanup_k3s_network_interfaces
+
+    echo ''
+    echo '[*] Cleanup complete.'
+    echo '    Reboot recommended:  sudo reboot'
+    echo '    Then install:        sudo bash rpi_container_toolkit.sh --master-k3s'
+    echo ''
 }
 
 function install_helm_three() {
@@ -412,9 +520,17 @@ case "$1" in
         run_as_root
         install_arkade
         ;;
-    --clean)
+    --clean|--reset-k3s|--clean-k3s)
         run_as_root
-        k3s_uninstall
+        skip_confirm=false
+        shift
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -y|--yes) skip_confirm=true ;;
+            esac
+            shift
+        done
+        k3s_complete_cleanup "${skip_confirm}"
         ;;
     -h|--help)
         _help_menu
