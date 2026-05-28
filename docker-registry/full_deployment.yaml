@@ -4,8 +4,9 @@ metadata:
   name: docker-registry-ns
 ---
 apiVersion: v1
-data:
-  htpasswd: {{ Get this from README.md }}
+stringData:
+  # Replace: htpasswd -Bbn registry YOUR_PASSWORD
+  htpasswd: registry:CHANGEME
 kind: Secret
 metadata:
   name: docker-registry-htpasswd
@@ -13,22 +14,23 @@ metadata:
 type: Opaque
 ---
 # Create PersistentVolume
-# change the ip of NFS server
+# Set your NFS server IP/hostname and exported path below.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: docker-registry-storage-pv
-  namespace: docker-registry-ns
   labels:
-    type: local
+    type: nfs
 spec:
   storageClassName: manual
   capacity:
     storage: 50Gi
   accessModes:
-    - ReadWriteOnce
-  hostPath:
-          path: /mnt/kubernetes/docker-registry/registry
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: nfs.example.local
+    path: /exports/docker-registry
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -38,7 +40,7 @@ metadata:
 spec:
   storageClassName: manual
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 50Gi
@@ -63,6 +65,13 @@ spec:
       containers:
       - name: docker-registry
         image: registry
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
         ports:
         - containerPort: 5000
         volumeMounts:
