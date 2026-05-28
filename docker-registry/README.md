@@ -1,6 +1,26 @@
-* Required for htpasswd
-    sudo apt install apache2-utils -y
+# Docker registry (Kubernetes)
 
-* get your password and base64
-    htpasswd -Bc htpasswd registry
-    echo username:password | base64
+## Local overrides (not committed)
+
+Copy the template and edit your real values (NFS server, domain, htpasswd, issuer):
+
+```bash
+cp full_deployment.yaml full_deployment.local.yaml
+```
+
+Apply the local file:
+
+```bash
+kubectl apply -f full_deployment.local.yaml
+```
+
+`*.local.yaml` is listed in the repo root `.gitignore`.
+
+## htpasswd
+
+```bash
+sudo apt install -y apache2-utils
+htpasswd -Bbn registry YOUR_PASSWORD
+```
+
+Put the full `registry:$2y$...` line in `stringData.htpasswd` in your **local** manifest (or in the Secret via `kubectl create secret generic`).

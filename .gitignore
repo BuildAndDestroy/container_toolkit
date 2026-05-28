@@ -1,0 +1,20 @@
+# Local Kubernetes manifests (domains, emails, NFS, IPs, secrets)
+*.local.yaml
+**/*.local.yaml
+
+# Environment-specific issuer/registry copies
+*-prod.yaml
+**/*-prod.yaml
+
+# Traefik Helm values (cluster-specific)
+traefik/values.yaml
+traefik/values.local.yaml
+
+# Registry auth material (never commit real credentials)
+docker-registry/htpasswd
+**/htpasswd
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
