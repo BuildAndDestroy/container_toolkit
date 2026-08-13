@@ -1,0 +1,15 @@
+# Cluster / MetalLB settings we want on every Traefik install going forward.
+# Use with: helm upgrade --install ... --values values.cluster.yaml
+#
+# Safe to combine with --reuse-values on an existing release.
+
+# Visitor request logs (ClientAddr = real client IP when traffic policy is Local)
+logs:
+  access:
+    enabled: true
+
+# Preserve client source IPs through the LoadBalancer (MetalLB L2).
+# Without this, access logs show a node IP instead of the visitor.
+service:
+  spec:
+    externalTrafficPolicy: Local

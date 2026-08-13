@@ -123,6 +123,7 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt-staging
     traefik.ingress.kubernetes.io/frontend-entry-points: http, https
     traefik.ingress.kubernetes.io/redirect-entry-point: https
+    traefik.ingress.kubernetes.io/router.middlewares: docker-registry-ns-per-ip-ratelimit@kubernetescrd
 spec:
   ingressClassName: "traefik"
   rules:
@@ -142,6 +143,17 @@ spec:
     secretName: docker-registry-tls
 ---
 apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: per-ip-ratelimit
+  namespace: docker-registry-ns
+spec:
+  rateLimit:
+    average: 50
+    period: 1s
+    burst: 100
+---
+apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: registry-ingressroute
@@ -152,6 +164,8 @@ spec:
   routes:
     - match: Host(`registry.yourdomain.com`)
       kind: Rule
+      middlewares:
+        - name: per-ip-ratelimit
       services:
         - name: docker-registry-service
           port: 5000
