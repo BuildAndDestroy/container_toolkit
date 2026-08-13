@@ -9,7 +9,7 @@ logs:
     enabled: true
 
 # Preserve client source IPs through the LoadBalancer (MetalLB L2).
-# Without this, access logs show a node IP (e.g. 10.0.20.101) instead of the visitor.
+# Without this, access logs show a node IP instead of the visitor.
 service:
   spec:
     externalTrafficPolicy: Local

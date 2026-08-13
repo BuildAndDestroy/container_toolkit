@@ -47,9 +47,9 @@ Access log line shape:
 ```
 
 - **ClientAddr** (first field): visitor IP — this is what you want
-- **backend** (e.g. `http://192.168.0.156:8080`): Kubernetes pod IP Traefik proxied to — ignore for visitor tracking
+- **backend** (e.g. `http://10.42.0.15:8080`): Kubernetes pod IP Traefik proxied to — ignore for visitor tracking
 
-If ClientAddr looks like a node IP (`10.0.20.99`–`101`), `externalTrafficPolicy` is not `Local`.
+If ClientAddr looks like a cluster node IP instead of the visitor, `externalTrafficPolicy` is not `Local`.
 
 ## Dashboard (optional)
 
@@ -75,20 +75,13 @@ Prefer Let's Encrypt / cert-manager for real hosts.
 
 ## Rate limiting (scanners / abuse)
 
-Rate limits live in **each website repo** (not here), as a `per-ip-ratelimit` Middleware next to that app’s security-headers middleware. Traefik cross-namespace middlewares are disabled, so each namespace needs its own copy.
+Define rate limits in **each application’s manifests** (not in this toolkit), as a `per-ip-ratelimit` Middleware in the same namespace as that app’s Ingress. Traefik cross-namespace middlewares are disabled by default, so each namespace needs its own copy.
 
-| Site | Repo | Middleware / Ingress |
-|---|---|---|
-| harvestrangelabs.com | `../harvestrangelabs.com` | `k3s/traefik-security-middleware.yaml`, `k3s/ingress.yaml` |
-| interest-rates | `../interest-rates.harvestrangelabs.com` | `deploy/kubernetes/middleware.yaml`, `ingress.yaml` |
-| eagle-mountain budget | `../eaglemountain-cc-budget` | `k3s-web/middleware.yaml`, `ingress.yaml` |
-| manage-vendors | `../manage-vendors.harvestrangelabs.com` | `k3s/traefik-security-middleware.yaml`, `k3s/ingress.yaml` |
-| wedding-photos | `../wedding-photos.harvestrangelabs.com` | `k3s/traefik-security-middleware.yaml`, `k3s/ingress.yaml` |
-| docker registry | `../container_toolkit/docker-registry` | `full_deployment.yaml` / `.local.yaml` |
+This repo’s `docker-registry/` manifests include an example. For other apps, ship the Middleware next to security-headers (or equivalent) and attach it on the public HTTPS Ingress.
 
-Typical defaults: **25 req/s**, burst **50** (registry: **50**/s, burst **100**). Over-limit → **HTTP 429**.
+Typical defaults: **25 req/s**, burst **50** (busy APIs / registries may need higher). Over-limit → **HTTP 429**.
 
-Pattern for a new public site:
+Pattern for a public site:
 
 ```yaml
 # Middleware (same namespace as the Ingress)
@@ -105,7 +98,7 @@ spec:
 ```
 
 ```yaml
-# HTTPS Ingress — rate-limit first, then security headers
+# HTTPS Ingress — rate-limit first, then other middleware (e.g. security headers)
 metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.middlewares: >-
@@ -187,4 +180,4 @@ spec:
 ## TODO
 
 * Prefer `apiVersion: traefik.io/v1alpha1` for IngressRoute (not `traefik.containo.us`)
-* When adding a new public site, ship `per-ip-ratelimit` in that app’s repo and wire it on the HTTPS Ingress
+* When adding a new public app, ship `per-ip-ratelimit` in that app’s manifests and wire it on the HTTPS Ingress
