@@ -103,6 +103,9 @@ sudo bash container_toolkit.sh --help
 | `--rancher` | Run Rancher in Docker (standalone) |
 | `--helm` | Install Helm 3 |
 | `--clean` | Reset Kubernetes/container state (destructive) |
+| `--disable-swap` | Permanently disable swap + restart kubelet |
+| `--repair-calico` | Re-apply Calico on an existing cluster (master) |
+| `--restart-cni` | Restart containerd + kubelet on a NotReady node |
 
 ### Control plane
 
@@ -159,14 +162,20 @@ sudo bash container_toolkit.sh --helm
 sudo bash container_toolkit.sh --clean
 ```
 
-### Swap after reboot
+### Swap / kubelet will not start
 
-Ubuntu sometimes re-enables swap after reboot. If nodes are `NotReady`:
+Kubelet refuses to start with swap enabled. The installer permanently disables swap
+(fstab, cloud-init, systemd `*.swap` units). On an existing node:
 
 ```bash
+sudo bash container_toolkit.sh --disable-swap
+# or manually:
 sudo swapoff -a
+sudo sed -i '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
 sudo systemctl restart kubelet
 ```
+
+Verify: `free -h` (Swap should be 0) and `systemctl status kubelet`.
 
 ### Docker image (help only)
 
