@@ -46,6 +46,9 @@ function _help_menu() {
     echo '[*] --restart-cni     Restart containerd + kubelet (run on each NotReady node).'
     echo '                      sudo bash container_toolkit.sh --restart-cni'
     echo ''
+    echo '[*] --disable-swap    Permanently disable swap (kubelet requirement); restarts kubelet.'
+    echo '                      sudo bash container_toolkit.sh --disable-swap'
+    echo ''
     echo "Environment overrides: K8S_MINOR=${K8S_MINOR} CALICO_VERSION=${CALICO_VERSION} POD_NETWORK_CIDR=${POD_NETWORK_CIDR}"
     exit 0
 }
@@ -87,12 +90,54 @@ function set_hostname() {
 }
 
 function disable_swap() {
-    echo '[*] Disabling swap (required for kubelet).'
+    local unit
+    echo '[*] Disabling swap permanently (required for kubelet).'
+
+    # Immediate: turn off all swap devices/files now.
     swapoff -a 2>/dev/null || true
-    sed -i.bak-k8s '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
-    # Prevent cloud images from re-enabling swap on boot (common on Ubuntu 22.04+).
+
+    # Persist across reboot: comment swap lines in fstab.
+    if [[ -f /etc/fstab ]]; then
+        cp -n /etc/fstab /etc/fstab.bak-k8s 2>/dev/null || true
+        sed -i '/[[:space:]]swap[[:space:]]/s/^\([^#]\)/#\1/' /etc/fstab
+    fi
+
+    # Ubuntu cloud images often re-create swap via cloud-init.
     if [[ -f /etc/cloud/cloud.cfg ]]; then
-        sed -i.bak-k8s 's/^\([[:space:]]*- swap\)/#\1/' /etc/cloud/cloud.cfg 2>/dev/null || true
+        cp -n /etc/cloud/cloud.cfg /etc/cloud/cloud.cfg.bak-k8s 2>/dev/null || true
+        sed -i 's/^\([[:space:]]*- swap\)/#\1/' /etc/cloud/cloud.cfg 2>/dev/null || true
+    fi
+    mkdir -p /etc/cloud/cloud.cfg.d
+    tee /etc/cloud/cloud.cfg.d/99-disable-swap.cfg >/dev/null <<'EOF'
+# Keep swap disabled for Kubernetes / kubelet.
+swap:
+  filename: ''
+EOF
+
+    # Mask systemd *.swap units so they cannot start on boot.
+    shopt -s nullglob
+    for unit in /etc/systemd/system/*.swap /lib/systemd/system/*.swap /run/systemd/generator/*.swap; do
+        [[ -e "${unit}" ]] || continue
+        systemctl stop "$(basename "${unit}")" 2>/dev/null || true
+        systemctl mask "$(basename "${unit}")" 2>/dev/null || true
+    done
+    shopt -u nullglob
+    systemctl daemon-reload 2>/dev/null || true
+
+    # Common Ubuntu swapfile paths: keep the file but ensure it is not mounted.
+    for f in /swap.img /swapfile /var/swap; do
+        if [[ -f "${f}" ]]; then
+            chmod 600 "${f}" 2>/dev/null || true
+            echo "    swap file present (not deleted): ${f}"
+        fi
+    done
+
+    if swapon --show 2>/dev/null | grep -q .; then
+        echo '[*] Warning: swap still active after swapoff:'
+        swapon --show || true
+        echo '    Check: cat /proc/swaps ; grep swap /etc/fstab'
+    else
+        echo '[*] Swap is off (no active swap devices).'
     fi
 }
 
@@ -458,6 +503,16 @@ case "$1" in
     --restart-cni)
         _run_as_root
         restart_local_cni_services
+        ;;
+    --disable-swap)
+        _run_as_root
+        disable_swap
+        if systemctl is-enabled kubelet >/dev/null 2>&1 || systemctl list-unit-files kubelet.service >/dev/null 2>&1; then
+            echo '[*] Restarting kubelet.'
+            systemctl restart kubelet 2>/dev/null || true
+            systemctl enable kubelet 2>/dev/null || true
+        fi
+        echo '[*] Done. Verify: free -h ; systemctl status kubelet'
         ;;
     -h|--help)
         _help_menu
