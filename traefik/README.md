@@ -73,18 +73,64 @@ rm tls.crt tls.key
 
 Prefer Let's Encrypt / cert-manager for real hosts.
 
-## Rate limiting (scanners / abuse)
+## Bot defense / rate limiting (scanners / abuse)
 
-Define rate limits in **each application’s manifests** (not in this toolkit), as a `per-ip-ratelimit` Middleware in the same namespace as that app’s Ingress. Traefik cross-namespace middlewares are disabled by default, so each namespace needs its own copy.
+Public sites already have a per-app `per-ip-ratelimit` at **25 req/s, burst 50**. That is too loose for credential dumps: Traefik logs show one IP hitting `/.env`, `.aws`, phpinfo, WordPress, and `/auth/login` fast enough to 499/500 the app.
 
-This repo’s `docker-registry/` manifests include an example. For other apps, ship the Middleware next to security-headers (or equivalent) and attach it on the public HTTPS Ingress.
+Cluster-wide draft (not applied until you choose to):
 
-Typical defaults: **25 req/s**, burst **50** (busy APIs / registries may need higher). Over-limit → **HTTP 429**.
+| File | What it is |
+|---|---|
+| [`bot-defense.yaml`](bot-defense.yaml) | Scanner-path drop (403) + tighter per-IP `rateLimit` / `inFlightReq` chain in `traefik-v2` |
+| [`values.bot-defense.yaml`](values.bot-defense.yaml) | Optional Helm overlay that attaches the chain on `web` and `websecure` |
 
-Pattern for a public site:
+### 1. Scanner-path drop (apply first)
+
+Stops probe URLs at Traefik so SPA catch-alls never return 200 HTML for `/.env`.
+
+```bash
+kubectl apply -f bot-defense.yaml
+```
+
+Check with a host that already has a cert:
+
+```bash
+curl -sI "https://harvestrangelabs.com/.env"
+# expect HTTP/2 403
+```
+
+Legitimate app paths such as `/auth/login` are **not** blocked. Rate-limit those.
+
+To undo just the drop + unused middlewares:
+
+```bash
+kubectl delete -f bot-defense.yaml
+```
+
+### 2. Global per-IP rate limit + in-flight cap (optional helm)
+
+Creates the `bot-defense` chain (`60 req/min`, burst `20`, **8** concurrent requests per client IP) and, after this overlay, runs it on every request. Over-limit → **HTTP 429**.
+
+Requires `externalTrafficPolicy: Local` (already in `values.cluster.yaml`) so buckets key off the real visitor IP, not a node IP. Do **not** set `ipStrategy.depth` behind MetalLB.
+
+```bash
+# bot-defense.yaml must already be applied
+helm upgrade traefik traefik/traefik \
+  --namespace traefik-v2 \
+  --reuse-values \
+  --values values.cluster.yaml \
+  --values values.bot-defense.yaml
+```
+
+If a real SPA page load 429s, raise `burst` on `per-ip-ratelimit` in `bot-defense.yaml`. There is one Traefik replica, so in-memory buckets are enough (no Redis).
+
+Per-app 25 req/s limits can stay; the entrypoint chain is the tighter cap.
+
+### 3. Per-app copy (new Ingresses, or no global overlay)
+
+Cross-namespace Middleware refs are still off unless you enable `providers.kubernetesCRD.allowCrossNamespace`. `docker-registry/` shows the per-namespace copy. Prefer attaching `traefik-v2-bot-defense@kubernetescrd` at the entrypoint (step 2) instead of duplicating.
 
 ```yaml
-# Middleware (same namespace as the Ingress)
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -92,20 +138,23 @@ metadata:
   namespace: <app-namespace>
 spec:
   rateLimit:
-    average: 25
-    period: 1s
-    burst: 50
+    average: 60
+    period: 1m
+    burst: 20
+    sourceCriterion:
+      ipStrategy: {}
 ```
 
 ```yaml
-# HTTPS Ingress — rate-limit first, then other middleware (e.g. security headers)
 metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.middlewares: >-
       <namespace>-per-ip-ratelimit@kubernetescrd,<namespace>-security-headers@kubernetescrd
 ```
 
-Requires Traefik `service.spec.externalTrafficPolicy: Local` (see `values.cluster.yaml`) so limits key off the real client IP.
+### Follow-up: CrowdSec
+
+Rate limits do not ban repeat scanners. If dumps continue from many IPs, add the [CrowdSec Traefik bouncer](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin) (log-based `http-probing` + community blocklists). That is a separate agent + plugin install, not in this draft.
 
 ## Example Ingress / IngressRoute
 
@@ -180,4 +229,5 @@ spec:
 ## TODO
 
 * Prefer `apiVersion: traefik.io/v1alpha1` for IngressRoute (not `traefik.containo.us`)
-* When adding a new public app, ship `per-ip-ratelimit` in that app’s manifests and wire it on the HTTPS Ingress
+* Apply `bot-defense.yaml` when ready; add `values.bot-defense.yaml` on helm upgrade for the global chain
+* CrowdSec Traefik bouncer if rotating-IP scanners bypass per-IP limits
