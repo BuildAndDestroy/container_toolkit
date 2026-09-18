@@ -1,0 +1,137 @@
+# Cluster-wide Traefik bot defense (k3s / traefik-v2).
+# Draft only — apply when you are ready:
+#
+#   kubectl apply -f bot-defense.yaml
+#
+# What this does:
+#   1. Scanner-path drop (live after apply). High-priority IngressRoutes return 403
+#      for probe paths and never hit app pods.
+#   2. per-IP rateLimit + inFlightReq chain (not attached until you also apply
+#      values.bot-defense.yaml via helm, or wire the chain on an Ingress).
+#
+# Real client IPs: requires service.spec.externalTrafficPolicy: Local
+# (already in values.cluster.yaml). Do not set ipStrategy.depth — MetalLB is
+# not a trusted HTTP proxy hop.
+#
+# Existing per-app per-ip-ratelimit (25 req/s, burst 50) is too loose for the
+# dumps in Traefik logs. This chain is 60 req/min, burst 20, 8 in-flight / IP.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: reject-forbidden
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  # Nobody is in this range, so every request on routers that use this
+  # middleware is refused before the dummy sink service.
+  ipAllowList:
+    sourceRange:
+      - 255.255.255.255/32
+    rejectStatusCode: 403
+---
+# Dummy backend. reject-forbidden always 403s first, so this is never called.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scanner-sink
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  ports:
+    - name: http
+      port: 9
+      targetPort: 9
+---
+# Paths taken from live Traefik access logs (credential dumps, phpinfo, WP).
+# Do not include real app routes such as /auth/login.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: scanner-drop-http
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: PathRegexp(`(?i)(?:^|/)\.env`) || PathRegexp(`(?i)(?:^|/)\.git`) || PathPrefix(`/.aws`) || PathPrefix(`/.docker`) || PathPrefix(`/.kube`) || Path(`/.pypirc`) || Path(`/.npmrc`) || Path(`/.git-credentials`) || PathPrefix(`/%2F`) || Path(`/xmlrpc.php`) || Path(`/wp-login.php`) || PathPrefix(`/wp-admin`) || PathPrefix(`/wordpress`) || PathPrefix(`/wp/`) || Path(`/wp`) || PathRegexp(`(?i)(?:^|/)(?:phpinfo|_?phpinfo|php-info|php_info|info|pi|i)\.php$`) || PathPrefix(`/actuator`) || Path(`/server-status`) || Path(`/debug/vars`)
+      priority: 1000000
+      middlewares:
+        - name: reject-forbidden
+      services:
+        - name: scanner-sink
+          port: 9
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: scanner-drop-https
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: PathRegexp(`(?i)(?:^|/)\.env`) || PathRegexp(`(?i)(?:^|/)\.git`) || PathPrefix(`/.aws`) || PathPrefix(`/.docker`) || PathPrefix(`/.kube`) || Path(`/.pypirc`) || Path(`/.npmrc`) || Path(`/.git-credentials`) || PathPrefix(`/%2F`) || Path(`/xmlrpc.php`) || Path(`/wp-login.php`) || PathPrefix(`/wp-admin`) || PathPrefix(`/wordpress`) || PathPrefix(`/wp/`) || Path(`/wp`) || PathRegexp(`(?i)(?:^|/)(?:phpinfo|_?phpinfo|php-info|php_info|info|pi|i)\.php$`) || PathPrefix(`/actuator`) || Path(`/server-status`) || Path(`/debug/vars`)
+      priority: 1000000
+      middlewares:
+        - name: reject-forbidden
+      services:
+        - name: scanner-sink
+          port: 9
+  tls: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: per-ip-ratelimit
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  rateLimit:
+    average: 60
+    period: 1m
+    burst: 20
+    sourceCriterion:
+      ipStrategy: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: per-ip-inflight
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  inFlightReq:
+    amount: 8
+    sourceCriterion:
+      ipStrategy: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: bot-defense
+  namespace: traefik-v2
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: bot-defense
+spec:
+  chain:
+    middlewares:
+      - name: per-ip-ratelimit
+      - name: per-ip-inflight

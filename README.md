@@ -77,7 +77,7 @@ sudo K3S_VERSION=v1.31.5+k3s1 CALICO_VERSION=v3.31.2 bash rpi_container_toolkit.
 | `raspberry_pi/secure_pi.sh` | Pi prep: SSH, hostname, swap off, cgroup/USB boot config |
 | `cert-manager/` | ClusterIssuer manifests for TLS |
 | `metallb/` | MetalLB L2 config and sample service |
-| `traefik/` | Traefik notes |
+| `traefik/` | Traefik Helm values and bot-defense middleware draft |
 | `docker-registry/` | In-cluster registry deployment |
 | `prometheus_grafana/` | Monitoring stack notes |
 | `user_administration/` | User auth helper scripts |

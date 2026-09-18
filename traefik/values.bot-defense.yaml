@@ -1,0 +1,29 @@
+# Optional Helm overlay: attach the traefik-v2/bot-defense chain on every
+# HTTP/HTTPS request. Apply only after bot-defense.yaml exists in-cluster.
+#
+#   helm upgrade traefik traefik/traefik \
+#     --namespace traefik-v2 \
+#     --reuse-values \
+#     --values values.cluster.yaml \
+#     --values values.bot-defense.yaml
+#
+# Entrypoint middleware runs before per-app routers. Existing app
+# per-ip-ratelimit (25/s burst 50) still applies after this; the tighter
+# 60/min chain is the effective cap.
+#
+# One Traefik replica today — in-memory buckets are enough. Do not add Redis
+# until you scale Traefik replicas.
+#
+# To undo:
+#   helm upgrade traefik traefik/traefik \
+#     --namespace traefik-v2 \
+#     --reuse-values \
+#     --values values.cluster.yaml
+# then remove the entrypoint middleware args if they persist, or
+# helm rollback traefik -n traefik-v2
+
+# Attach once per entrypoint. Do not also set ports.websecure.http.middlewares
+# or HTTPS would consume two rate-limit tokens per request.
+additionalArguments:
+  - "--entryPoints.web.http.middlewares=traefik-v2-bot-defense@kubernetescrd"
+  - "--entryPoints.websecure.http.middlewares=traefik-v2-bot-defense@kubernetescrd"
