@@ -1,29 +1,18 @@
-# Optional Helm overlay: attach the traefik-v2/bot-defense chain on every
-# HTTP/HTTPS request. Apply only after bot-defense.yaml exists in-cluster.
+# Do not attach a rate limit to the web or websecure entrypoints.
 #
-#   helm upgrade traefik traefik/traefik \
-#     --namespace traefik-v2 \
-#     --reuse-values \
-#     --values values.cluster.yaml \
-#     --values values.bot-defense.yaml
+# An entrypoint middleware runs for every host. The old overlay set:
 #
-# Entrypoint middleware runs before per-app routers. Existing app
-# per-ip-ratelimit (25/s burst 50) still applies after this; the tighter
-# 60/min chain is the effective cap.
+#   --entryPoints.web.http.middlewares=traefik-v2-bot-defense@kubernetescrd
+#   --entryPoints.websecure.http.middlewares=traefik-v2-bot-defense@kubernetescrd
 #
-# One Traefik replica today — in-memory buckets are enough. Do not add Redis
-# until you scale Traefik replicas.
+# That chain was 60 requests/minute, burst 20, and 8 in flight per client IP.
+# One gallery open spends the burst. A venue Wi-Fi is one public IP for
+# hundreds of phones, so the same bucket 429s the whole room.
 #
-# To undo:
-#   helm upgrade traefik traefik/traefik \
-#     --namespace traefik-v2 \
-#     --reuse-values \
-#     --values values.cluster.yaml
-# then remove the entrypoint middleware args if they persist, or
-# helm rollback traefik -n traefik-v2
-
-# Attach once per entrypoint. Do not also set ports.websecure.http.middlewares
-# or HTTPS would consume two rate-limit tokens per request.
-additionalArguments:
-  - "--entryPoints.web.http.middlewares=traefik-v2-bot-defense@kubernetescrd"
-  - "--entryPoints.websecure.http.middlewares=traefik-v2-bot-defense@kubernetescrd"
+# Scanner-path 403s live in bot-defense.yaml (kubectl apply), not in Helm.
+# Per-app limits live in templates/ and are attached on that Ingress only.
+#
+# This file is intentionally empty. Passing it on a --reset-values upgrade
+# does not put the chain back. A --reuse-values upgrade keeps whatever
+# additionalArguments the release already has; use the detach command in the
+# README to clear an already-installed chain.

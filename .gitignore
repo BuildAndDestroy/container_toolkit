@@ -10,6 +10,9 @@
 traefik/values.yaml
 traefik/values.local.yaml
 
+# Filled per-site rate-limit copies (namespace substituted). Sources stay in traefik/templates/.
+traefik/sites/
+
 # Registry auth material (never commit real credentials)
 docker-registry/htpasswd
 **/htpasswd

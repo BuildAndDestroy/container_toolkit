@@ -1,20 +1,15 @@
-# Cluster-wide Traefik bot defense (k3s / traefik-v2).
-# Draft only — apply when you are ready:
+# Cluster-wide scanner-path drop (k3s / traefik-v2).
 #
 #   kubectl apply -f bot-defense.yaml
 #
-# What this does:
-#   1. Scanner-path drop (live after apply). High-priority IngressRoutes return 403
-#      for probe paths and never hit app pods.
-#   2. per-IP rateLimit + inFlightReq chain (not attached until you also apply
-#      values.bot-defense.yaml via helm, or wire the chain on an Ingress).
+# High-priority IngressRoutes return 403 for probe paths and never hit app pods.
+# This file does not rate-limit. A limit on the shared web/websecure entrypoints
+# applies to every host, and one public IP at a venue is hundreds of people.
+# Copy templates/ratelimit-site.yaml or templates/ratelimit-venue.yaml into the
+# app namespace and attach it on that Ingress only.
 #
-# Real client IPs: requires service.spec.externalTrafficPolicy: Local
-# (already in values.cluster.yaml). Do not set ipStrategy.depth — MetalLB is
-# not a trusted HTTP proxy hop.
-#
-# Existing per-app per-ip-ratelimit (25 req/s, burst 50) is too loose for the
-# dumps in Traefik logs. This chain is 60 req/min, burst 20, 8 in-flight / IP.
+# Real client IPs require service.spec.externalTrafficPolicy: Local
+# (values.cluster.yaml). Do not set ipStrategy.depth — MetalLB is not an HTTP hop.
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -48,7 +43,7 @@ spec:
       targetPort: 9
 ---
 # Paths taken from live Traefik access logs (credential dumps, phpinfo, WP).
-# Do not include real app routes such as /auth/login.
+# Do not include real app routes such as /auth/login or /api/auth.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -91,47 +86,3 @@ spec:
         - name: scanner-sink
           port: 9
   tls: {}
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: per-ip-ratelimit
-  namespace: traefik-v2
-  labels:
-    app.kubernetes.io/name: traefik
-    app.kubernetes.io/component: bot-defense
-spec:
-  rateLimit:
-    average: 60
-    period: 1m
-    burst: 20
-    sourceCriterion:
-      ipStrategy: {}
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: per-ip-inflight
-  namespace: traefik-v2
-  labels:
-    app.kubernetes.io/name: traefik
-    app.kubernetes.io/component: bot-defense
-spec:
-  inFlightReq:
-    amount: 8
-    sourceCriterion:
-      ipStrategy: {}
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: bot-defense
-  namespace: traefik-v2
-  labels:
-    app.kubernetes.io/name: traefik
-    app.kubernetes.io/component: bot-defense
-spec:
-  chain:
-    middlewares:
-      - name: per-ip-ratelimit
-      - name: per-ip-inflight
