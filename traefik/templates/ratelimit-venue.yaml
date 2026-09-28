@@ -1,0 +1,78 @@
+# Hundreds of people on one network (venue Wi-Fi, hotel, conference).
+# Copy into the app namespace and replace every "app" below, then set the
+# auth paths and host on the IngressRoute. Do not apply this file from traefik/.
+#
+# Everyone in the room is one public IP, so the limit is per room, not per phone.
+#
+# venue-ratelimit — attach to the main Ingress. First page load for about
+# 400 people (document, assets, API list) fits in the burst. After that the
+# bucket refills at 500 requests/second. This is a ceiling against a flood,
+# not a per-person quota.
+#
+#   traefik.ingress.kubernetes.io/router.middlewares: app-venue-ratelimit@kubernetescrd
+#
+# venue-auth-ratelimit — put this on a second Ingress whose paths are only the
+# credential routes (PathPrefix /api/auth and /api/totp, or whatever this app
+# uses). A longer path matches before PathPrefix(/), so those requests do not
+# also spend the room bucket. Use the same TLS secret as the main Ingress.
+# Burst 800 covers a room submitting login and a second factor together.
+# After that, 40 requests/second. That stops a multi-thousand-per-second
+# password dump from this Wi-Fi. It does not stop a steady spray; keep
+# per-account limits in the app.
+#
+# Image and file GETs stay on venue-ratelimit. Do not give them the auth bucket.
+# A client that requests every photo at once will still 429: 400 people times
+# hundreds of files is larger than this ceiling. Cap each browser at a small
+# number of concurrent file fetches and retry 429s.
+#
+# Buckets key off the TCP client address (externalTrafficPolicy: Local).
+# Leave ipStrategy.depth unset. One Traefik replica: in-memory buckets are
+# enough. Add Redis only when Traefik itself has more than one replica.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: venue-rate
+  namespace: app
+spec:
+  rateLimit:
+    average: 500
+    period: 1s
+    burst: 8000
+    sourceCriterion:
+      ipStrategy: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: venue-inflight
+  namespace: app
+spec:
+  inFlightReq:
+    amount: 4000
+    sourceCriterion:
+      ipStrategy: {}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: venue-ratelimit
+  namespace: app
+spec:
+  chain:
+    middlewares:
+      - name: venue-rate
+      - name: venue-inflight
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: venue-auth-ratelimit
+  namespace: app
+spec:
+  rateLimit:
+    average: 40
+    period: 1s
+    burst: 800
+    sourceCriterion:
+      ipStrategy: {}
