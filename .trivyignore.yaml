@@ -1,0 +1,10 @@
+# Accepted Trivy misconfigurations. Scope each entry to the paths it covers so
+# the same check still fires on our own manifests.
+
+misconfigurations:
+  # Traefik's ClusterRole reads Secrets so it can load TLS certificates for
+  # Ingress / IngressRoute. That is how the controller works.
+  - id: KSV-0041
+    paths:
+      - "rendered/traefik.yaml"
+    statement: Traefik controller needs get/list/watch on Secrets for TLS.

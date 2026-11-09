@@ -1,0 +1,33 @@
+# Gitleaks config for this repo. Used by .github/workflows/iac-scan.yml.
+#
+# Starts from the built-in rules, then adds one for plain-text passwords in
+# Kubernetes / Helm YAML. The built-in rules miss values like
+#   stringData:
+#     password: "hunter2-but-longer"
+# because they look for known token formats, not literal passwords.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yaml-plaintext-password"
+description = "Plain-text password value in YAML (Secret stringData, Helm values, env)"
+# key: value where the key ends in password/passwd/pwd/secret/token and the value
+# is a literal of 8+ chars. Templated or referenced values are skipped below.
+regex = '''(?im)^\+?\s*-?\s*[a-z0-9_.-]*(?:password|passwd|pwd|secret|token)\s*:\s*["']?([^"'\s#]{8,})["']?'''
+secretGroup = 1
+path = '''(?i)\.ya?ml$'''
+keywords = ["password", "passwd", "pwd", "secret", "token"]
+
+  [[rules.allowlists]]
+  description = "Placeholders, templates, and references to other objects"
+  regexTarget = "match"
+  regexes = [
+    '''\{\{''',                                   # Helm / Go templates
+    '''\$\{''',                                   # env substitution
+    '''<[^>]*>''',                                # <placeholder>
+    '''(?i)(changeme|change-me|replace|example|placeholder|redacted|xxxx)''',
+    '''(?i)(secretName|secretKeyRef|secretRef|existingSecret|tokenSecret|secretKey|passwordSecret)\s*:''',
+    '''(?i):\s*["']?(true|false|null|none)["']?\s*$''',
+    '''(?im)^\+?\s*-?\s*secret\s*:''',             # bare `secret: <name>` is a Secret reference (e.g. Traefik basicAuth)
+  ]

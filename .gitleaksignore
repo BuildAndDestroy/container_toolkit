@@ -1,0 +1,2 @@
+# Placeholder {{ BASE64 OUTPUT OF ~/.docker/config.json }}, not a real credential.
+1ece44602ac923fd178498082c85d27b449957cb:raspberry_pi/example_yaml_deployment.yaml:kubernetes-secret-yaml:8
