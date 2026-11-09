@@ -2,7 +2,17 @@
 
 Helm chart install notes for this cluster (k3s + MetalLB). Values match **chart 41+** (`accessLog`, `providers.file.content` as an object).
 
-## Install / upgrade
+**Pinned version: chart `42.3.1` → Traefik `v3.7.17`.** Always pass `--version`. Without it, Helm installs whatever is newest on the day you run it.
+
+| Traefik | Status |
+|---|---|
+| ≤ v3.7.13 (chart ≤ 41.6.x) | Vulnerable: GHSA-qm9f-w54v-q2qh, GHSA-53qr-784g-cj35 (Negotiate/NTLM pool contamination), GHSA-fh26-gfpp-7xxx (SNI check bypass), plus the Ingress-NGINX provider advisories |
+| v3.7.14 – v3.7.16 (chart 41.7.0 – 42.2.0) | Vulnerable: **GHSA-xv5x-242w-7hf7**, unauthenticated DoS via `Authorization: NTLM/Negotiate`, no special config needed. Do not stop here. |
+| **v3.7.17** (chart 42.3.0+) | Patched for all of the above |
+
+Chart 42 needs Kubernetes ≥ 1.30. Its other breaking changes only touch Traefik Hub values, which this cluster doesn't set. With `values.cluster.yaml`, 41.6.0 and 42.3.1 render the same manifests except for labels and the image tag.
+
+## New deployment
 
 ```bash
 helm repo add traefik https://traefik.github.io/charts
@@ -10,11 +20,78 @@ helm repo update
 
 kubectl create ns traefik-v2
 
-# Fresh install or 41.x upgrade with access logs + real client IPs:
 helm upgrade --install traefik traefik/traefik \
   --namespace traefik-v2 \
+  --version 42.3.1 \
   --values values.cluster.yaml
 ```
+
+A fresh install creates the CRDs from the chart's `crds/` directory, so there is no extra step.
+
+## Upgrading an existing release to v3.7.17
+
+Check what is running first:
+
+```bash
+helm -n traefik-v2 list
+kubectl -n traefik-v2 get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+helm -n traefik-v2 get values traefik   # should match values.cluster.yaml only
+```
+
+### Option A: chart upgrade to 42.3.1 (recommended)
+
+Helm never upgrades CRDs on `helm upgrade`, so apply the 42.3.1 CRDs first. The changes only add fields (for example a new optional `respondingTimeouts` on IngressRoute), so existing objects stay valid.
+
+```bash
+helm repo update traefik
+
+# 1. CRDs from the exact chart version
+helm pull traefik/traefik --version 42.3.1 --untar -d /tmp/traefik-42.3.1
+kubectl apply --server-side --force-conflicts -f /tmp/traefik-42.3.1/traefik/crds/
+
+# 2. Preview (optional, needs the helm-diff plugin)
+helm diff upgrade traefik traefik/traefik -n traefik-v2 \
+  --version 42.3.1 --reset-values --values values.cluster.yaml
+
+# 3. Upgrade
+helm upgrade traefik traefik/traefik \
+  --namespace traefik-v2 \
+  --version 42.3.1 \
+  --reset-values \
+  --values values.cluster.yaml
+
+# 4. Verify
+kubectl -n traefik-v2 rollout status deploy/traefik
+kubectl -n traefik-v2 get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'   # docker.io/traefik:v3.7.17
+curl -sI https://<a-site-host>/ | head -1
+```
+
+Middlewares, IngressRoutes and Ingresses are Kubernetes objects. They survive the upgrade, so nothing in `traefik/sites/` needs to be reapplied. For about 2 seconds after the new pod starts, the log shows `middleware "<ns>-<name>@kubernetescrd" does not exist` for every Ingress, because the Ingress provider loads before the CRD provider has synced. That is expected. Worry only if those errors keep appearing afterwards.
+
+Tested 2026-11-09 on the k3s cluster, 41.6.0 → 42.3.1: all 51 Middlewares kept, every host returned the same status, redirect and security headers as before, the site rate limit still returns 429, and `/.env` still returns 403.
+
+`--reset-values` together with `values.cluster.yaml` is safe here because the live release has no other user values. If you added overlays since then, pass those files too.
+
+Rollback: `helm -n traefik-v2 rollback traefik <previous-revision>`. Leave the newer CRDs in place, since they only add fields.
+
+### Option B: image-only hotfix (stay on chart 41.6.x)
+
+Use this to get the patched binary out right away without a chart major bump, for example during a change freeze. The chart templates stay as they are and only the container tag changes. CRDs are untouched.
+
+```bash
+helm upgrade traefik traefik/traefik \
+  --namespace traefik-v2 \
+  --version 41.6.0 \
+  --reset-values \
+  --values values.cluster.yaml \
+  --set image.tag=v3.7.17
+```
+
+This is a stopgap. The chart's `appVersion` no longer matches the image, and a later upgrade without `--set image.tag` drops back to the chart default. Follow up with Option A.
+
+### Option C: in-place `kubectl set image` (not recommended)
+
+`kubectl -n traefik-v2 set image deploy/traefik traefik=docker.io/traefik:v3.7.17` works in an emergency, but Helm doesn't know about it and the next `helm upgrade` reverts it. Use it only if Helm itself is broken, then run Option A.
 
 `values.cluster.yaml` enables:
 
@@ -93,6 +170,7 @@ Two different jobs. Do not put them on the same middleware.
 | [`values.bot-defense.yaml`](values.bot-defense.yaml) | Empty on purpose. Does not attach anything to an entrypoint. |
 | [`templates/ratelimit-site.yaml`](templates/ratelimit-site.yaml) | One person per public IP. 60/minute, burst 20, 8 in flight. |
 | [`templates/ratelimit-venue.yaml`](templates/ratelimit-venue.yaml) | Hundreds of people on one Wi-Fi (one public IP). Room-sized ceiling, separate auth ceiling. |
+| [`templates/ratelimit-registry.yaml`](templates/ratelimit-registry.yaml) | `docker push` / `docker pull`. 50/second, burst 100. Not the site or venue profile. |
 
 An entrypoint middleware runs for every host. A 20-request burst there rejects a normal gallery load, and at a venue it rejects the whole room, because every phone is the same client IP. Attach a limit on that app's Ingress only.
 
@@ -144,15 +222,17 @@ Delete those middlewares only after the upgrade. Traefik will not start if an en
 
 ### 3. Pick a per-app template
 
-**Site** — home and cellular visitors, each with their own IP. Brochure sites, admin tools, the registry. Copy `templates/ratelimit-site.yaml` into `traefik/sites/`.
+**Site** — home and cellular visitors, each with their own IP. Brochure sites and admin tools. Copy `templates/ratelimit-site.yaml` into `traefik/sites/`.
 
 **Venue** — a room, a hotel, a conference. Hundreds of phones, one public IP. Copy `templates/ratelimit-venue.yaml` into `traefik/sites/`.
 
-| | Site | Venue (the room) | Venue auth routes |
-|---|---|---|---|
-| Average | 60 / minute | 500 / second | 40 / second |
-| Burst | 20 | 8000 | 800 |
-| In flight | 8 | 4000 | (none; the rate bucket is the cap) |
+**Registry** — `docker push` and `docker pull`. One build machine opens many layer requests at once. Copy `templates/ratelimit-registry.yaml` into `traefik/sites/`. The site burst of 20 makes the client report `toomanyrequests`. The venue ceiling is for a crowded Wi-Fi, not for the registry host.
+
+| | Site | Venue (the room) | Venue auth routes | Registry |
+|---|---|---|---|---|
+| Average | 60 / minute | 500 / second | 40 / second | 50 / second |
+| Burst | 20 | 8000 | 800 | 100 |
+| In flight | 8 | 4000 | (none; the rate bucket is the cap) | none |
 
 Venue burst 8000 is one opening wave of about 400 people loading a page (document, assets, API), not 400 people each pulling every file in a gallery. Apps that fan out one request per photo have to cap concurrency in the browser and retry 429. Raising this burst until an unbounded gallery fits also lets one Wi-Fi flood the nodes.
 
