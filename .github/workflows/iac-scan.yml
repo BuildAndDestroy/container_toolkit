@@ -1,0 +1,135 @@
+# IaC and secret scanning for this repo.
+#
+#   trivy      Kubernetes misconfigurations in tracked manifests, plus the Traefik
+#              chart rendered with traefik/values.cluster.yaml. Report-only for now:
+#              findings go to Security > Code scanning and the job log, the job
+#              stays green. Set TRIVY_EXIT_CODE to "1" once the backlog is clean.
+#   gitleaks   Committed secrets (built-in rules + .gitleaks.toml). Blocking.
+#              PRs scan the PR's commits; the weekly run scans full history.
+#   shellcheck The node setup scripts. Report-only (warnings as annotations).
+#
+# Actions are pinned to commit SHAs. Update the SHA and the version comment
+# together; do not switch back to tags.
+
+name: IaC scan
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC: catches new Trivy checks on unchanged files
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iac-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_VERSION: v0.76.1
+  TRIVY_SEVERITY: HIGH,CRITICAL
+  TRIVY_EXIT_CODE: "0" # report-only; "1" fails the job on HIGH/CRITICAL
+  HELM_VERSION: v3.22.1
+  # Keep in step with the version pinned in traefik/README.md.
+  TRAEFIK_CHART_VERSION: 42.3.1
+  GITLEAKS_VERSION: 8.30.1
+
+jobs:
+  trivy:
+    name: Trivy (Kubernetes misconfig)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # Values files are not manifests. Render what is actually deployed.
+      - name: Render Traefik chart with cluster values
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo update traefik
+          mkdir -p rendered
+          helm template traefik traefik/traefik \
+            --version "$TRAEFIK_CHART_VERSION" \
+            --namespace traefik-v2 \
+            --values traefik/values.cluster.yaml \
+            > rendered/traefik.yaml
+
+      - name: Trivy config scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: .
+          trivyignores: .trivyignore.yaml
+          severity: ${{ env.TRIVY_SEVERITY }}
+          limit-severities-for-sarif: true
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: "0"
+
+      # Fork PRs get a read-only token and cannot upload; the table below still runs.
+      - name: Upload to code scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+      - name: Trivy config scan (log + gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          scan-type: config
+          scan-ref: .
+          trivyignores: .trivyignore.yaml
+          severity: ${{ env.TRIVY_SEVERITY }}
+          format: table
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+
+  gitleaks:
+    name: Gitleaks (secrets)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # PR comments on findings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: ${{ env.GITLEAKS_VERSION }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # shellcheck is preinstalled on ubuntu-latest. Report-only: findings become
+      # warning annotations on the PR. Drop the "|| true" to make it blocking.
+      - name: ShellCheck (warnings and errors)
+        run: |
+          shellcheck --version | head -2
+          git ls-files -z '*.sh' \
+            | xargs -0 --no-run-if-empty shellcheck --severity=warning --format=gcc \
+            | sed -E 's/^([^:]+):([0-9]+):([0-9]+): (warning|error|note): (.*)$/::warning file=\1,line=\2,col=\3::\5/' \
+            || true
