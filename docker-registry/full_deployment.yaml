@@ -117,12 +117,13 @@ metadata:
   name: docker-registry-ingress
   namespace: docker-registry-ns
   annotations:
-    #kubernetes.io/ingress.class: "traefik"
-    acme.cert-manager.io/http01-edit-in-place: "true"
     #cert-manager.io/cluster-issuer: letsencrypt-prod
     cert-manager.io/cluster-issuer: letsencrypt-staging
-    traefik.ingress.kubernetes.io/frontend-entry-points: http, https
-    traefik.ingress.kubernetes.io/redirect-entry-point: https
+    # HTTPS only. Without an entrypoints annotation Traefik serves this Ingress
+    # on web (port 80) too, so registry logins and pushes go over plain HTTP.
+    # Port 80 is handled by docker-registry-http-redirect below.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
     traefik.ingress.kubernetes.io/router.middlewares: docker-registry-ns-per-ip-ratelimit@kubernetescrd
 spec:
   ingressClassName: "traefik"
@@ -142,6 +143,45 @@ spec:
     - registry.yourdomain.com
     secretName: docker-registry-tls
 ---
+# Port 80 -> 301 to https. Only the redirect runs on this router.
+# cert-manager HTTP-01 still works: its solver Ingress uses the longer
+# /.well-known/acme-challenge/ path, and Let's Encrypt follows redirects.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: docker-registry-ns
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: docker-registry-http-redirect
+  namespace: docker-registry-ns
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: docker-registry-ns-redirect-https@kubernetescrd
+spec:
+  ingressClassName: "traefik"
+  rules:
+  - host: registry.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: docker-registry-service
+            port:
+              number: 5000
+---
+# Registry pushes, not the site or venue templates.
+# A docker push opens many requests at once (one per layer). The site profile
+# (60/minute, burst 20) returns 429 on that. The venue profile is for a room
+# full of phones on one Wi-Fi. See traefik/templates/ratelimit-registry.yaml.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -152,6 +192,8 @@ spec:
     average: 50
     period: 1s
     burst: 100
+    sourceCriterion:
+      ipStrategy: {}
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute

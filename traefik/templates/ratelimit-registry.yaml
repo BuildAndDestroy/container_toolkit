@@ -1,0 +1,27 @@
+# Image registry. Copy into traefik/sites/ and replace every "app" with the
+# registry namespace (docker-registry-ns). Do not apply this file from traefik/.
+#
+# Do not use ratelimit-site.yaml here. A docker push sends one request per
+# layer in parallel, and the site burst of 20 returns 429 (toomanyrequests).
+# Do not use ratelimit-venue.yaml either. A registry is a few push clients,
+# not hundreds of phones on one Wi-Fi. Venue numbers would let any single IP
+# throw 500 requests/second at this host.
+#
+# 50 requests/second, burst 100. No in-flight cap of 8: that also 429s a push.
+# The Ingress or IngressRoute must name this middleware. Creating it is not
+# enough if the router still points at a site-sized per-ip-ratelimit.
+#
+#   traefik.ingress.kubernetes.io/router.middlewares: app-per-ip-ratelimit@kubernetescrd
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: per-ip-ratelimit
+  namespace: app
+spec:
+  rateLimit:
+    average: 50
+    period: 1s
+    burst: 100
+    sourceCriterion:
+      ipStrategy: {}
