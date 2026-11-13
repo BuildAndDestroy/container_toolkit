@@ -2,15 +2,18 @@
 
 Helm chart install notes for this cluster (k3s + MetalLB). Values match **chart 41+** (`accessLog`, `providers.file.content` as an object).
 
-**Pinned version: chart `42.3.1` → Traefik `v3.7.17`.** Always pass `--version`. Without it, Helm installs whatever is newest on the day you run it.
+**Pinned version: chart `42.4.0` → Traefik `v3.7.18`.** Always pass `--version`. Without it, Helm installs whatever is newest on the day you run it.
 
 | Traefik | Status |
 |---|---|
 | ≤ v3.7.13 (chart ≤ 41.6.x) | Vulnerable: GHSA-qm9f-w54v-q2qh, GHSA-53qr-784g-cj35 (Negotiate/NTLM pool contamination), GHSA-fh26-gfpp-7xxx (SNI check bypass), plus the Ingress-NGINX provider advisories |
 | v3.7.14 – v3.7.16 (chart 41.7.0 – 42.2.0) | Vulnerable: **GHSA-xv5x-242w-7hf7**, unauthenticated DoS via `Authorization: NTLM/Negotiate`, no special config needed. Do not stop here. |
-| **v3.7.17** (chart 42.3.0+) | Patched for all of the above |
+| v3.7.17 (chart 42.3.0 – 42.3.2) | Vulnerable: GHSA-ccgh-9g52-6vwg, GHSA-cp28-5662-543f, GHSA-p956-6gvv-mxqp, GHSA-x5pf-cqh3-2gv8, GHSA-rr42-h8r2-f28g |
+| **v3.7.18** (chart 42.4.0+) | Patched for all of the above |
 
-Chart 42 needs Kubernetes ≥ 1.30. Its other breaking changes only touch Traefik Hub values, which this cluster doesn't set. With `values.cluster.yaml`, 41.6.0 and 42.3.1 render the same manifests except for labels and the image tag.
+Chart 42 needs Kubernetes ≥ 1.30. Its other breaking changes only touch Traefik Hub values, which this cluster doesn't set. With `values.cluster.yaml`, 42.3.1 and 42.4.0 render the same manifests except for labels, the image tag, and a new default `--entryPoints.{web,websecure}.transport.lifeCycle.requestAcceptGraceTimeout=5s` (pod shutdown takes 5s longer so the Service drops the endpoint before Traefik stops accepting). The 42.4.0 CRD changes touch only Traefik Hub CRDs.
+
+v3.7.18 behavior changes ([migration guide](https://doc.traefik.io/traefik/v3.7/migrate/v3/#v3718)) don't affect this cluster: BasicAuth now rejects passwords over 1024 bytes (no BasicAuth middlewares here), the Ingress-NGINX provider's TLS options changed (that provider is off), and dot-segments carrying path parameters (`/foo/..;bar/baz`) are resolved like plain dot-segments.
 
 ## New deployment
 
@@ -22,13 +25,13 @@ kubectl create ns traefik-v2
 
 helm upgrade --install traefik traefik/traefik \
   --namespace traefik-v2 \
-  --version 42.3.1 \
+  --version 42.4.0 \
   --values values.cluster.yaml
 ```
 
 A fresh install creates the CRDs from the chart's `crds/` directory, so there is no extra step.
 
-## Upgrading an existing release to v3.7.17
+## Upgrading an existing release to v3.7.18
 
 Check what is running first:
 
@@ -38,31 +41,31 @@ kubectl -n traefik-v2 get deploy traefik -o jsonpath='{.spec.template.spec.conta
 helm -n traefik-v2 get values traefik   # should match values.cluster.yaml only
 ```
 
-### Option A: chart upgrade to 42.3.1 (recommended)
+### Option A: chart upgrade to 42.4.0 (recommended)
 
-Helm never upgrades CRDs on `helm upgrade`, so apply the 42.3.1 CRDs first. The changes only add fields (for example a new optional `respondingTimeouts` on IngressRoute), so existing objects stay valid.
+Helm never upgrades CRDs on `helm upgrade`, so apply the 42.4.0 CRDs first. The changes only add fields (42.3 added an optional `respondingTimeouts` on IngressRoute; 42.4 only touches Hub CRDs), so existing objects stay valid.
 
 ```bash
 helm repo update traefik
 
 # 1. CRDs from the exact chart version
-helm pull traefik/traefik --version 42.3.1 --untar -d /tmp/traefik-42.3.1
-kubectl apply --server-side --force-conflicts -f /tmp/traefik-42.3.1/traefik/crds/
+helm pull traefik/traefik --version 42.4.0 --untar -d /tmp/traefik-42.4.0
+kubectl apply --server-side --force-conflicts -f /tmp/traefik-42.4.0/traefik/crds/
 
 # 2. Preview (optional, needs the helm-diff plugin)
 helm diff upgrade traefik traefik/traefik -n traefik-v2 \
-  --version 42.3.1 --reset-values --values values.cluster.yaml
+  --version 42.4.0 --reset-values --values values.cluster.yaml
 
 # 3. Upgrade
 helm upgrade traefik traefik/traefik \
   --namespace traefik-v2 \
-  --version 42.3.1 \
+  --version 42.4.0 \
   --reset-values \
   --values values.cluster.yaml
 
 # 4. Verify
 kubectl -n traefik-v2 rollout status deploy/traefik
-kubectl -n traefik-v2 get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'   # docker.io/traefik:v3.7.17
+kubectl -n traefik-v2 get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'   # docker.io/traefik:v3.7.18
 curl -sI https://<a-site-host>/ | head -1
 ```
 
@@ -70,28 +73,30 @@ Middlewares, IngressRoutes and Ingresses are Kubernetes objects. They survive th
 
 Tested 2026-11-09 on the k3s cluster, 41.6.0 → 42.3.1: all 51 Middlewares kept, every host returned the same status, redirect and security headers as before, the site rate limit still returns 429, and `/.env` still returns 403.
 
+Tested 2026-11-13 on the k3s cluster, 42.3.1 → 42.4.0 (helm revision 8): all 52 Middlewares kept, all 10 Ingress hosts returned the same status as before, `/.env` still returns 403, the registry still redirects HTTP → HTTPS (308), and no errors in the Traefik log after rollout.
+
 `--reset-values` together with `values.cluster.yaml` is safe here because the live release has no other user values. If you added overlays since then, pass those files too.
 
 Rollback: `helm -n traefik-v2 rollback traefik <previous-revision>`. Leave the newer CRDs in place, since they only add fields.
 
-### Option B: image-only hotfix (stay on chart 41.6.x)
+### Option B: image-only hotfix (stay on chart 42.3.x)
 
-Use this to get the patched binary out right away without a chart major bump, for example during a change freeze. The chart templates stay as they are and only the container tag changes. CRDs are untouched.
+Use this to get the patched binary out right away without a chart bump, for example during a change freeze. The chart templates stay as they are and only the container tag changes. CRDs are untouched.
 
 ```bash
 helm upgrade traefik traefik/traefik \
   --namespace traefik-v2 \
-  --version 41.6.0 \
+  --version 42.3.1 \
   --reset-values \
   --values values.cluster.yaml \
-  --set image.tag=v3.7.17
+  --set image.tag=v3.7.18
 ```
 
 This is a stopgap. The chart's `appVersion` no longer matches the image, and a later upgrade without `--set image.tag` drops back to the chart default. Follow up with Option A.
 
 ### Option C: in-place `kubectl set image` (not recommended)
 
-`kubectl -n traefik-v2 set image deploy/traefik traefik=docker.io/traefik:v3.7.17` works in an emergency, but Helm doesn't know about it and the next `helm upgrade` reverts it. Use it only if Helm itself is broken, then run Option A.
+`kubectl -n traefik-v2 set image deploy/traefik traefik=docker.io/traefik:v3.7.18` works in an emergency, but Helm doesn't know about it and the next `helm upgrade` reverts it. Use it only if Helm itself is broken, then run Option A.
 
 `values.cluster.yaml` enables:
 

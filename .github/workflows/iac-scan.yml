@@ -34,7 +34,7 @@ env:
   TRIVY_EXIT_CODE: "0" # report-only; "1" fails the job on HIGH/CRITICAL
   HELM_VERSION: v3.22.1
   # Keep in step with the version pinned in traefik/README.md.
-  TRAEFIK_CHART_VERSION: 42.3.1
+  TRAEFIK_CHART_VERSION: 42.4.0
   GITLEAKS_VERSION: 8.30.1
 
 jobs:
