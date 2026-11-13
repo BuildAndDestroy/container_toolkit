@@ -3,14 +3,14 @@
 # Chart 41 renamed logs.access → accessLog and requires providers.file.content
 # as an object ({}). 40.x stored those as logs: and content: "".
 #
-# Pinned: chart 42.3.1 (Traefik v3.7.17). Patched for the 2026 Negotiate/NTLM
-# and SNI advisories. v3.7.14-v3.7.16 (charts 41.7.0-42.2.0) are NOT safe
-# (GHSA-xv5x-242w-7hf7). Existing releases: apply the chart CRDs first; see README.
+# Pinned: chart 42.4.0 (Traefik v3.7.18). Patched for the 2026 Negotiate/NTLM,
+# SNI and November 2026 advisories. v3.7.17 and older are NOT safe
+# (see README). Existing releases: apply the chart CRDs first; see README.
 #
 # Fresh install:
 #   helm upgrade --install traefik traefik/traefik \
 #     --namespace traefik-v2 \
-#     --version 42.3.1 \
+#     --version 42.4.0 \
 #     --values values.cluster.yaml
 #
 # 40 → 41 (one time): do not --reuse-values. That re-injects the old keys.
